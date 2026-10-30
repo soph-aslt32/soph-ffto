@@ -24,3 +24,6 @@ rustc-ice-*.txt
 #.idea/
 
 *.pyc
+CLAUDE.md
+*.lock
+02_src/samplelog
