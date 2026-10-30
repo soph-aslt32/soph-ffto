@@ -1,0 +1,118 @@
+# 合成データ生成器の設定例（数値はすべて架空）
+#
+# ライン構成（上流 → 下流）
+#   load(U1-P1) --R1 upper--> proc1(U3-P1) --R1 lower--> buffer(U4-P1)
+#   --R2 upper--> proc2(U5-P7,P8,P9 並列) --R2 lower--> unload(U6-P1) --> 払い出し
+
+[simulation]
+seed = 1
+start = "2026-01-01T00:00:00"
+duration_s = 86400  # 1日分．1か月分は 2592000
+
+[input]
+interval_s = 86.4             # 取り込み間隔．実際の取り込み時刻からこの間隔を空ける（1000枚/day 相当）
+cassette_size = 20            # カセットあたりの枚数
+cassette_gap_s = 0.0          # カセット間に追加で空ける時間
+process_id_mode = "per_cassette"  # per_cassette: カセット内で同じ処理ID / per_material: 1枚ごとに抽選
+
+[input.process_id_weights]    # 処理IDの出現比率
+A = 0.5
+B = 0.3
+C = 0.2
+
+[log]
+lag_min_s = 0.0               # 上流OUT〜下流INの打刻ラグ（一様分布）
+lag_max_s = 2.0
+logc_missing_ratio = 0.5      # ログCで動作内容・行き先が欠ける割合
+logc_kinds = ["hand"]         # ログCに動作開始・終了を出す Pos の種類（例: ["hand", "process"]）
+
+[policies]
+dispatch = "upstream_first"   # ロボット作業の優先順位（仮ルール）
+exchange = "basic"            # 入れ替え動作の手順
+layer_select = "lowest_index" # 並列層の選択
+
+# --- 装置構成（Unit・Pos は上流から順に記述する．この順がログXの seq になる） ---
+
+[[units]]
+id = "U1"
+positions = [{ id = "P1", kind = "conveyor" }]
+
+[[units]]
+id = "U2"
+positions = [
+  { id = "P1", kind = "hand" },
+  { id = "P2", kind = "hand" },
+]
+
+[[units]]
+id = "U3"
+positions = [{ id = "P1", kind = "process" }]
+
+[[units]]
+id = "U4"
+positions = [{ id = "P1", kind = "conveyor" }]
+
+[[units]]
+id = "U5"
+positions = [
+  { id = "P1", kind = "hand" },
+  { id = "P2", kind = "hand" },
+  { id = "P7", kind = "process" },
+  { id = "P8", kind = "process" },
+  { id = "P9", kind = "process" },
+]
+
+[[units]]
+id = "U6"
+positions = [{ id = "P1", kind = "conveyor" }]
+
+# --- ロボット ---
+
+[[robots]]
+id = "R1"
+upper = ["U2", "P1"]
+lower = ["U2", "P2"]
+move_s = 3.0                  # 段間の移動時間（既定）
+pick_s = 2.0
+place_s = 2.0
+move_overrides = [{ a = "load", b = "buffer", s = 5.0 }]
+
+[[robots]]
+id = "R2"
+upper = ["U5", "P1"]
+lower = ["U5", "P2"]
+move_s = 3.0
+pick_s = 2.0
+place_s = 2.0
+move_overrides = [{ a = "buffer", b = "unload", s = 5.0 }]
+
+# --- 段（マテリアルの流れ順）．feed は前段からこの段へ運ぶ手段 ---
+
+[[stages]]
+name = "load"
+positions = [["U1", "P1"]]
+service = { time_s = 5.0 }    # コンベアの搬送時間
+
+[[stages]]
+name = "proc1"
+positions = [["U3", "P1"]]
+service = { times_s = { A = 40.0, B = 60.0, C = 80.0 }, jitter_s = 0.5 }
+feed = { robot = "R1", hand = "upper" }
+
+[[stages]]
+name = "buffer"
+positions = [["U4", "P1"]]
+service = { time_s = 10.0 }
+feed = { robot = "R1", hand = "lower" }
+
+[[stages]]
+name = "proc2"
+positions = [["U5", "P7"], ["U5", "P8"], ["U5", "P9"]]
+service = { times_s = { A = 150.0, B = 200.0, C = 240.0 }, jitter_s = 1.0 }
+feed = { robot = "R2", hand = "upper" }
+
+[[stages]]
+name = "unload"
+positions = [["U6", "P1"]]
+service = { time_s = 5.0 }
+feed = { robot = "R2", hand = "lower" }
