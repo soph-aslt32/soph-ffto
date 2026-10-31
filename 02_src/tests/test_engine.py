@@ -361,3 +361,67 @@ def test_output_files(tmp_path, normal):
     normal.write(tmp_path)
     names = {p.name for p in tmp_path.iterdir()}
     assert {"truth_capacity.json", "truth_robot_waits.csv", "truth_intake.csv"} <= names
+
+
+# --- 検証用の設定 ---
+
+
+def test_interval_schedule_changes_the_interval_per_cassette():
+    config = sample_config(interval_s=200.0, cassette_size=5, interval_schedule=((2, 100.0), (1, 300.0)))
+    result = run(config)
+    times = {}
+    for t, row in result.recorder.log_a:
+        times.setdefault(row[3], []).append(t)
+    expected = [100.0, 100.0, 300.0, 100.0]
+    for cassette, interval in zip(sorted(times), expected):
+        gaps = [b - a for a, b in zip(times[cassette], times[cassette][1:])]
+        assert all(g == pytest.approx(interval) for g in gaps)
+
+
+def with_robots(config, **overrides):
+    robots = tuple(dataclasses.replace(r, **overrides) for r in config.robots)
+    return dataclasses.replace(config, robots=robots)
+
+
+def test_robot_jitter_varies_the_action_time():
+    result = run(with_robots(sample_config(), jitter_s=0.3))
+    lengths = {round(op["t_end"] - op["t_start"], 3) for op in result.recorder.robot_ops if op["action"] == "PICK"}
+    assert len(lengths) > 10
+
+
+def test_robot_disturbance_stretches_some_actions():
+    result = run(with_robots(sample_config(), disturbance_ratio=0.1, disturbance_s=10.0))
+    picks = [op["t_end"] - op["t_start"] for op in result.recorder.robot_ops if op["action"] == "PICK"]
+    stretched = sum(p == pytest.approx(12.0) for p in picks)
+    assert 0 < stretched < len(picks) * 0.3
+
+
+def test_default_robot_times_do_not_consume_random_numbers():
+    a = run(sample_config())
+    b = run(with_robots(sample_config(), jitter_s=0.0, disturbance_ratio=0.0))
+    assert a.recorder.robot_ops == b.recorder.robot_ops
+
+
+def test_missing_rows_remove_start_or_end_rows():
+    config = with_log(sample_config(), logc_row_missing_ratio=0.2)
+    rows = run(config).recorder.log_c
+    full = run(sample_config()).recorder.log_c
+    assert 0.7 * len(full) < len(rows) < 0.9 * len(full)
+
+
+def test_log_rows_are_written_in_time_order_within_a_second(tmp_path):
+    result = run(sample_config())
+    result.write(tmp_path)
+    lines = (tmp_path / "log_c.csv").read_text(encoding="utf-8").splitlines()[1:]
+    times = [line.split(",")[0] for line in lines]
+    assert times == sorted(times)
+
+
+def test_shuffled_rows_stay_within_their_second(tmp_path):
+    a, b = tmp_path / "a", tmp_path / "b"
+    run(sample_config()).write(a)
+    run(with_log(sample_config(), shuffle_within_second=True)).write(b)
+    plain = (a / "log_c.csv").read_text(encoding="utf-8").splitlines()
+    shuffled = (b / "log_c.csv").read_text(encoding="utf-8").splitlines()
+    assert plain != shuffled
+    assert sorted(plain) == sorted(shuffled)

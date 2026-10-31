@@ -127,8 +127,11 @@ class Recorder:
     def _action(self, pos: Position, action: str, target: str, t_start: float, t_end: float) -> None:
         if self.rng_c.random() < self.config.log.logc_missing_ratio:
             action, target = "", ""
+        drop = self.config.log.logc_row_missing_ratio
         for t, event in ((t_start, "START"), (t_end, "END")):
             stamped = t + self._logc_lag()
+            if drop > 0 and self.rng_c.random() < drop:
+                continue
             self.log_c.append((stamped, [self.stamp(stamped), pos.unit_id, pos.pos_id, event, action, target]))
 
     # --- 集計・出力 ---
@@ -197,9 +200,13 @@ class Recorder:
         out_dir.mkdir(parents=True, exist_ok=True)
         start = self.config.start
 
+        shuffle = self.config.log.shuffle_within_second
+
         def fmt(rows: list[tuple[float, list[Any]]]) -> list[list[Any]]:
-            ordered = sorted(enumerate(rows), key=lambda x: (x[1][1][0], x[0]))
-            return [[_fmt_time(start, r[0]), *r[1:]] for _, (_, r) in ordered]
+            # 基本は（秒，実際の時刻）の順．検証用に，同じ秒の中の順序を乱せる
+            tie = (lambda t: self.rng_c.random()) if shuffle else (lambda t: t)
+            ordered = sorted(rows, key=lambda x: (x[1][0], tie(x[0])))
+            return [[_fmt_time(start, r[0]), *r[1:]] for _, r in ordered]
 
         _write_csv(out_dir / "log_x.csv", LOG_X_HEADER, self._log_x_rows())
         _write_csv(out_dir / "log_a.csv", LOG_A_HEADER, fmt(self.log_a))

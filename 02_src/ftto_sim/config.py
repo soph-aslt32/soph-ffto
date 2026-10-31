@@ -33,6 +33,9 @@ class RobotConfig:
     place_s: float
     # (段名, 段名) -> 移動時間．順不同で引く
     move_overrides: dict[frozenset[str], float]
+    jitter_s: float = 0.0  # 動作時間のばらつき（標準偏差）
+    disturbance_ratio: float = 0.0  # 動作が外乱で伸びる割合
+    disturbance_s: float = 0.0  # 外乱で伸びる時間
 
     def hand_key(self, hand: str) -> tuple[str, str]:
         return self.upper if hand == "upper" else self.lower
@@ -80,6 +83,8 @@ class InputConfig:
     cassette_gap_s: float
     process_id_mode: str  # "per_cassette" | "per_material"
     process_id_weights: dict[str, float]
+    # (カセット数, 取り込み間隔) の列．順に繰り返す．空なら interval_s を使う
+    interval_schedule: tuple[tuple[int, float], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -91,6 +96,8 @@ class LogConfig:
     logc_moves: bool = False  # MOVE の行を出すか．実ログには記録されない
     logc_lag_offset_s: float = 0.0  # ログBに対するログCの打刻のずれ（一定分．負も可）
     logc_lag_jitter_s: float = 0.0  # ログCの打刻の行ごとのばらつき（0〜この値の一様分布）
+    logc_row_missing_ratio: float = 0.0  # ログCの行そのものが欠ける割合
+    shuffle_within_second: bool = False  # 同じ秒の中で行の順序を乱す
 
 
 @dataclass(frozen=True)
@@ -163,6 +170,7 @@ def _parse_input(t: dict[str, Any]) -> InputConfig:
         cassette_gap_s=float(t.get("cassette_gap_s", 0.0)),
         process_id_mode=str(t.get("process_id_mode", "per_cassette")),
         process_id_weights=weights,
+        interval_schedule=tuple((int(n), float(v)) for n, v in t.get("interval_schedule", [])),
     )
 
 
@@ -175,6 +183,8 @@ def _parse_log(t: dict[str, Any]) -> LogConfig:
         logc_moves=bool(t.get("logc_moves", False)),
         logc_lag_offset_s=float(t.get("logc_lag_offset_s", 0.0)),
         logc_lag_jitter_s=float(t.get("logc_lag_jitter_s", 0.0)),
+        logc_row_missing_ratio=float(t.get("logc_row_missing_ratio", 0.0)),
+        shuffle_within_second=bool(t.get("shuffle_within_second", False)),
     )
 
 
@@ -214,6 +224,9 @@ def _parse_robot(t: dict[str, Any]) -> RobotConfig:
         pick_s=float(t.get("pick_s", 0.0)),
         place_s=float(t.get("place_s", 0.0)),
         move_overrides=overrides,
+        jitter_s=float(t.get("jitter_s", 0.0)),
+        disturbance_ratio=float(t.get("disturbance_ratio", 0.0)),
+        disturbance_s=float(t.get("disturbance_s", 0.0)),
     )
 
 
@@ -261,6 +274,8 @@ def _validate(c: SimConfig) -> None:
             if key in hand_keys:
                 raise ConfigError(f"ハンド {key} が複数のロボットに割り当てられています")
             hand_keys.add(key)
+        if r.jitter_s < 0 or r.disturbance_s < 0 or not 0 <= r.disturbance_ratio <= 1:
+            raise ConfigError(f"ロボット {r.robot_id} の jitter_s / disturbance_s / disturbance_ratio が不正です")
 
     if not c.stages:
         raise ConfigError("stages が空です")
@@ -297,6 +312,8 @@ def _validate(c: SimConfig) -> None:
     inp = c.input
     if inp.interval_s <= 0 or inp.cassette_size <= 0:
         raise ConfigError("input.interval_s と input.cassette_size は正の値にしてください")
+    if any(n <= 0 or v <= 0 for n, v in inp.interval_schedule):
+        raise ConfigError("input.interval_schedule は [カセット数, 取り込み間隔] の正の値の列にしてください")
     if inp.process_id_mode not in ("per_cassette", "per_material"):
         raise ConfigError("input.process_id_mode は per_cassette / per_material のいずれかです")
     if not inp.process_id_weights or any(w < 0 for w in inp.process_id_weights.values()):
@@ -305,5 +322,7 @@ def _validate(c: SimConfig) -> None:
         raise ConfigError("log の打刻ラグは 0 <= lag_min_s <= lag_max_s にしてください")
     if not 0 <= c.log.logc_missing_ratio <= 1:
         raise ConfigError("log.logc_missing_ratio は 0〜1 にしてください")
+    if not 0 <= c.log.logc_row_missing_ratio <= 1:
+        raise ConfigError("log.logc_row_missing_ratio は 0〜1 にしてください")
     if c.log.logc_lag_jitter_s < 0:
         raise ConfigError("log.logc_lag_jitter_s は 0 以上にしてください")

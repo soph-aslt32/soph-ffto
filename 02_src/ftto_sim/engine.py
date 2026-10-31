@@ -41,6 +41,7 @@ class Simulator:
         # 乱数は用途ごとに分け，ログの設定を変えてもシミュレーションの挙動が変わらないようにする
         self._rng_service = random.Random(f"{config.seed}:service")
         self._rng_input = random.Random(f"{config.seed}:input")
+        self._rng_robot = random.Random(f"{config.seed}:robot")
         self.recorder = Recorder(config, self.topology, random.Random(f"{config.seed}:log"),
                                  random.Random(f"{config.seed}:logc"))
         self.now = 0.0
@@ -117,7 +118,18 @@ class Simulator:
         """次（self._n_input 番目，0始まり）のマテリアルを取り込める時刻．実際の取り込み時刻から指定間隔後."""
         inp = self.config.input
         gap = inp.cassette_gap_s if self._n_input % inp.cassette_size == 0 else 0.0
-        return self.now + inp.interval_s + gap
+        return self.now + self._interval_for((self._n_input - 1) // inp.cassette_size) + gap
+
+    def _interval_for(self, cassette_index: int) -> float:
+        inp = self.config.input
+        if not inp.interval_schedule:
+            return inp.interval_s
+        k = cassette_index % sum(n for n, _ in inp.interval_schedule)
+        for n, interval in inp.interval_schedule:
+            if k < n:
+                return interval
+            k -= n
+        raise AssertionError("unreachable")
 
     # --- マテリアルの移動と段での処理 ---
 
@@ -174,6 +186,16 @@ class Simulator:
         return changed
 
     # --- ロボット ---
+
+    def robot_op_time(self, robot: Robot, base: float) -> float:
+        """動作の所要時間．ばらつきと外乱を与える．設定が無ければ乱数を消費しない."""
+        config = robot.config
+        duration = base
+        if config.jitter_s > 0:
+            duration = max(0.0, self._rng_robot.gauss(duration, config.jitter_s))
+        if config.disturbance_ratio > 0 and self._rng_robot.random() < config.disturbance_ratio:
+            duration += config.disturbance_s
+        return duration
 
     def _try_robot(self, robot: Robot) -> bool:
         if robot.busy:

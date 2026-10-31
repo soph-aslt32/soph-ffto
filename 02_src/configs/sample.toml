@@ -14,6 +14,7 @@ interval_s = 86.4             # 取り込み間隔．実際の取り込み時刻
 cassette_size = 20            # カセットあたりの枚数
 cassette_gap_s = 0.0          # カセット間に追加で空ける時間
 process_id_mode = "per_cassette"  # per_cassette: カセット内で同じ処理ID / per_material: 1枚ごとに抽選
+# interval_schedule = [[200, 120.0], [50, 58.0]]  # (カセット数, 取り込み間隔) の列．順に繰り返す（検証用）
 
 [input.process_id_weights]    # 処理IDの出現比率
 A = 0.5
@@ -28,6 +29,8 @@ logc_kinds = ["hand"]         # ログCに動作開始・終了を出す Pos の
 logc_moves = false            # ログCに MOVE の行を出すか（実ログには記録されない）
 logc_lag_offset_s = 1.0       # ログBに対するログCの打刻のずれ（一定分．負も可）
 logc_lag_jitter_s = 0.5       # ログCの打刻の行ごとのばらつき（0〜この値の一様分布）
+logc_row_missing_ratio = 0.0  # ログCの行そのものが欠ける割合（検証用）
+shuffle_within_second = false # 同じ秒の中で行の順序を乱す（検証用）
 
 [policies]
 dispatch = "upstream_first"   # ロボット作業の優先順位（仮ルール）．置き先が処理中なら，その前まで移動して待つ
@@ -78,6 +81,9 @@ lower = ["U2", "P2"]
 move_s = 3.0                  # 段間の移動時間（既定）
 pick_s = 2.0
 place_s = 2.0
+# jitter_s = 0.3                # 動作時間のばらつき（標準偏差）（検証用）
+# disturbance_ratio = 0.01      # 動作が外乱で伸びる割合（検証用）
+# disturbance_s = 10.0          # 外乱で伸びる時間（検証用）
 move_overrides = [{ a = "load", b = "buffer", s = 5.0 }]
 
 [[robots]]

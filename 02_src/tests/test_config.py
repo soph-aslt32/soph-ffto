@@ -1,7 +1,9 @@
+import dataclasses
+
 import pytest
 
 from ftto_sim import ConfigError, Simulator, load_config, load_config_str
-from ftto_sim.config import DEFAULT_PROCESS_KEY
+from ftto_sim.config import DEFAULT_PROCESS_KEY, _validate
 
 from .helpers import SAMPLE, sample_config, with_policies
 
@@ -92,3 +94,24 @@ def test_negative_jitter_is_rejected():
 def test_unknown_policy():
     with pytest.raises(ConfigError, match="policies.exchange"):
         Simulator(with_policies(sample_config(), exchange="unknown"))
+
+
+def test_rejects_invalid_interval_schedule():
+    config = load_config(SAMPLE)
+    bad = dataclasses.replace(config, input=dataclasses.replace(config.input, interval_schedule=((0, 10.0),)))
+    with pytest.raises(ConfigError):
+        _validate(bad)
+
+
+def test_rejects_invalid_robot_disturbance():
+    config = load_config(SAMPLE)
+    robots = tuple(dataclasses.replace(r, disturbance_ratio=1.5) for r in config.robots)
+    with pytest.raises(ConfigError):
+        _validate(dataclasses.replace(config, robots=robots))
+
+
+def test_rejects_invalid_row_missing_ratio():
+    config = load_config(SAMPLE)
+    bad = dataclasses.replace(config, log=dataclasses.replace(config.log, logc_row_missing_ratio=-0.1))
+    with pytest.raises(ConfigError):
+        _validate(bad)

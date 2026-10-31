@@ -54,7 +54,7 @@ class Move(Op):
         return True
 
     def start(self, sim: Simulator, robot: Robot) -> float:
-        return robot.move_time(sim.topology.stages, robot.location, self.stage_index)
+        return sim.robot_op_time(robot, robot.move_time(sim.topology.stages, robot.location, self.stage_index))
 
     def complete(self, sim: Simulator, robot: Robot) -> None:
         robot.location = self.stage_index
@@ -75,7 +75,7 @@ class Pick(Op):
         return robot.hands[self.hand].is_empty and self.pos.material is not None and self.pos.finished
 
     def start(self, sim: Simulator, robot: Robot) -> float:
-        return robot.config.pick_s
+        return sim.robot_op_time(robot, robot.config.pick_s)
 
     def complete(self, sim: Simulator, robot: Robot) -> None:
         sim.transfer(self.pos, robot.hands[self.hand])
@@ -99,7 +99,7 @@ class Place(Op):
         return robot.hands[self.hand].material is not None and self.pos.is_empty
 
     def start(self, sim: Simulator, robot: Robot) -> float:
-        return robot.config.place_s
+        return sim.robot_op_time(robot, robot.config.place_s)
 
     def complete(self, sim: Simulator, robot: Robot) -> None:
         sim.transfer(robot.hands[self.hand], self.pos)
@@ -128,7 +128,7 @@ class PlaceNext(Op):
         return self._chosen is not None
 
     def start(self, sim: Simulator, robot: Robot) -> float:
-        return robot.config.place_s
+        return sim.robot_op_time(robot, robot.config.place_s)
 
     def complete(self, sim: Simulator, robot: Robot) -> None:
         assert self._chosen is not None
