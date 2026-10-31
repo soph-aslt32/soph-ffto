@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .capacity import theoretical_capacity
 from .config import SimConfig
 from .ops import Op
 from .policies import build_policies
@@ -26,9 +27,10 @@ class SimResult:
     config: SimConfig
     recorder: Recorder
     summary: dict[str, Any]
+    capacity: dict[str, Any]
 
     def write(self, out_dir: str | Path) -> None:
-        self.recorder.write(Path(out_dir), self.summary)
+        self.recorder.write(Path(out_dir), self.summary, self.capacity)
 
 
 class Simulator:
@@ -39,13 +41,15 @@ class Simulator:
         # 乱数は用途ごとに分け，ログの設定を変えてもシミュレーションの挙動が変わらないようにする
         self._rng_service = random.Random(f"{config.seed}:service")
         self._rng_input = random.Random(f"{config.seed}:input")
-        self.recorder = Recorder(config, self.topology, random.Random(f"{config.seed}:log"))
+        self.recorder = Recorder(config, self.topology, random.Random(f"{config.seed}:log"),
+                                 random.Random(f"{config.seed}:logc"))
         self.now = 0.0
         self._queue: list[tuple[float, int, Callable[[], None]]] = []
         self._seq = itertools.count()
         self._n_input = 0
         self._n_completed = 0
         self._input_ready = False
+        self._input_ready_at = 0.0
         self._process_id = ""
 
     # --- 実行 ---
@@ -64,7 +68,8 @@ class Simulator:
             raise DeadlockError(self._describe_state())
         self.now = horizon
         summary = self.recorder.summary(horizon, self._n_input, self._n_completed)
-        return SimResult(self.config, self.recorder, summary)
+        capacity = theoretical_capacity(self.config, self.dispatch.waits_at_target)
+        return SimResult(self.config, self.recorder, summary, capacity)
 
     def _schedule(self, t: float, callback: Callable[[], None]) -> None:
         heapq.heappush(self._queue, (t, next(self._seq), callback))
@@ -82,6 +87,7 @@ class Simulator:
 
     def _on_release(self) -> None:
         self._input_ready = True
+        self._input_ready_at = self.now
 
     def _try_intake(self) -> bool:
         if not self._input_ready:
@@ -102,7 +108,7 @@ class Simulator:
         )
         self._n_input += 1
         self._input_ready = False
-        self.recorder.intake(self.now, material)
+        self.recorder.intake(self.now, material, self._input_ready_at)
         self.transfer(None, pos, material)
         self._schedule(self._next_release_time(), self._on_release)
         return True
@@ -194,10 +200,11 @@ class Simulator:
         return True
 
     def _on_op_end(self, robot: Robot, op: Op, t_start: float) -> None:
+        material_id = op.material_id(robot)
         op.complete(self, robot)
         robot.busy = False
         self.recorder.robot_op(robot.robot_id, robot.hands[op.hand], op.hand, op.action,
-                               op.target_label(self), t_start, self.now)
+                               op.target_label(self), material_id, t_start, self.now)
 
     def _describe_state(self) -> str:
         lines = [f"t={self.now:.1f}s でシミュレーションが停止しました（デッドロック）"]

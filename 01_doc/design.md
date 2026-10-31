@@ -49,12 +49,13 @@
 - ログCの行の Pos はハンドの Pos
 - ログCの START〜END に待ちは含まれない．待ちは END から次の START までの間にあたる
 - MOVE は実ログに記録されない．取る・置く動作は，それぞれ START と END の行がある
-  - 現行の生成器はログCに MOVE を出す．修正が必要（`01_doc/algorithm.md` の「生成器の修正が必要な点」）
+  - PICK は実際に取る動作で，取り始める時刻に START が記録される．移動は END から次の START の間にある
+  - 生成器は既定で MOVE の行を出さない．真値には残す
 - Upper と Lower の動作は基本的に重ならず，役割が分離している
 - 次のマテリアルを持って処理層の前まで移動できる．置けなければ MOVE の END の後で待つ
-  - 現行の生成器は上流で待つ．修正が必要（`01_doc/algorithm.md` の「生成器の修正が必要な点」）
+  - 生成器の既定の動作．比較用に，上流で待つ `upstream_first_wait_at_source` も選べる
 - ログBとログCの時刻は，通信のラグのため完全には一致しない
-  - 現行の生成器はログ間のラグを出さない．修正が必要（同上）
+  - 生成器は `log.logc_lag_offset_s`（一定分）と `log.logc_lag_jitter_s`（行ごとのばらつき）で与える
 - 同じ段の並列層は，同じ処理IDなら処理時間が同じ
 - ログ形式：本ワークスペースで標準形式を定義し，実ログはユーザー側で変換する．乖離が大きければ標準形式を見直す
 - 生成器は Python，重い推定処理は Rust
@@ -105,8 +106,8 @@
 4. 上流優先の結果，下流が埋まっていても，ロボットは上流のマテリアルを先に取って保持する
 5. 入れ替え動作の途中（手順5）で下流が埋まっていれば，ロボットは他の作業をせずにその場で待つ
 6. ログCの動作の粒度：MOVE・PICK・PLACE を別々の動作として出力する
-   - MOVE は実ログに記録されないので，出力しない設定を追加する（`01_doc/algorithm.md`）
-   - MOVE は，次に取る・置くハンドの Pos に記録する
+   - MOVE は実ログに記録されないので，既定では出力しない（`log.logc_moves = true` で出す）
+   - MOVE を出す場合は，次に取る・置くハンドの Pos に記録する
    - 欠落は，動作内容と行き先の両方を空欄にする
 7. 打刻ラグ：上流OUT は実時刻，下流IN は実時刻に一様分布のラグを足した時刻で打刻し，秒単位に切り捨てる
 8. コンベアは「搬送時間が一定の Pos」として扱う．コンベア間など，ロボットを介さない受け渡し（`feed = "auto"`）も可能
@@ -127,6 +128,7 @@
 | `ftto_sim/policies/exchange.py` | 作業を基本動作の列に展開する手順（入れ替え動作） |
 | `ftto_sim/policies/layer_select.py` | 並列層の選択（若い順） |
 | `ftto_sim/writers.py` | ログX/A/B/C と真値の記録・出力 |
+| `ftto_sim/capacity.py` | 設定から解析的に求める能力（照合用の真値） |
 | `configs/sample.toml` | 設定例（数値は架空） |
 
 - ルールを追加する場合は，クラスを実装して `ftto_sim/policies/__init__.py` に名前を登録すると，設定ファイルの `[policies]` から選べる
@@ -141,8 +143,11 @@
 | `log_b.csv` | `time, material_id, unit_id, pos_id, event(IN/OUT)` |
 | `log_c.csv` | `time, unit_id, pos_id, event(START/END), action, target` |
 | `truth_occupancy.csv` | マテリアル×Pos ごとの実時刻（IN・処理完了・OUT）と純粋な処理時間 |
-| `truth_robot_ops.csv` | ロボットの全動作の実時刻 |
-| `truth_summary.json` | Pos ごとの占有時間・処理時間，ロボットごとの稼働時間 |
+| `truth_robot_ops.csv` | ロボットの全動作（MOVE を含む）の実時刻と対象のマテリアル |
+| `truth_robot_waits.csv` | ロボットの待ちの実時刻と種類（`idle` 手空き／`process` 処理待ち／`hold` 保持待ち） |
+| `truth_intake.csv` | 取り込みが可能になった時刻，実際の取り込み時刻，待たされた時間 |
+| `truth_capacity.json` | 設定から解析的に求めた W，c，C，処理IDごとのライン限界（全部位の max．干渉は含まない） |
+| `truth_summary.json` | Pos ごとの占有時間・処理時間，ロボットごとの稼働時間と待ち時間 |
 
 - ログの時刻は秒単位（`YYYY-MM-DD HH:MM:SS`）．真値の時刻はシミュレーション開始からの秒（小数）
 

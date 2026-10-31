@@ -10,6 +10,7 @@ import csv
 import json
 import math
 import random
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -28,22 +29,34 @@ TRUTH_OCCUPANCY_HEADER = [
     "material_id", "process_id", "unit_id", "pos_id", "pos_kind", "stage",
     "t_in", "t_service_end", "t_out", "service_s",
 ]
-TRUTH_ROBOT_OPS_HEADER = ["robot_id", "hand", "unit_id", "pos_id", "action", "target", "t_start", "t_end"]
+TRUTH_ROBOT_OPS_HEADER = [
+    "robot_id", "hand", "unit_id", "pos_id", "action", "target", "material_id", "t_start", "t_end",
+]
+TRUTH_ROBOT_WAITS_HEADER = ["robot_id", "t_start", "t_end", "category", "next_action", "next_target"]
+TRUTH_INTAKE_HEADER = ["material_id", "t_ready", "t_intake", "delay_s"]
 
 # ログCの action 名．ハンド以外の Pos（処理層・コンベアなど）の動作を記録する場合に使う
 SERVICE_ACTIONS = {"process": "PROCESS", "conveyor": "CONVEY"}
+
+# ロボットの待ちの種類（truth_robot_waits.csv の category）
+WAIT_IDLE = "idle"  # 何も持たず，次の動作の対象も無い
+WAIT_PROCESS = "process"  # 何も持たず，処理層の完了を待っている
+WAIT_HOLD = "hold"  # マテリアルを持って待っている
+WAIT_CATEGORIES = (WAIT_IDLE, WAIT_PROCESS, WAIT_HOLD)
 
 
 @dataclass
 class Recorder:
     config: SimConfig
     topology: Topology
-    rng: random.Random  # 打刻ラグ・ログCの欠落用（シミュレーションの挙動とは独立）
+    rng: random.Random  # ログBの打刻ラグ用（シミュレーションの挙動とは独立）
+    rng_c: random.Random  # ログCのラグ・欠落用（ログCの設定を変えてもログBが変わらないように分ける）
     log_a: list[tuple[float, list[Any]]] = field(default_factory=list)
     log_b: list[tuple[float, list[Any]]] = field(default_factory=list)
     log_c: list[tuple[float, list[Any]]] = field(default_factory=list)
     occupancy: list[dict[str, Any]] = field(default_factory=list)
     robot_ops: list[dict[str, Any]] = field(default_factory=list)
+    intakes: list[dict[str, Any]] = field(default_factory=list)
     _open: dict[tuple[str, tuple[str, str]], dict[str, Any]] = field(default_factory=dict)
 
     # --- 打刻 ---
@@ -56,10 +69,18 @@ class Recorder:
         lo, hi = self.config.log.lag_min_s, self.config.log.lag_max_s
         return self.rng.uniform(lo, hi) if hi > lo else lo
 
+    def _logc_lag(self) -> float:
+        log = self.config.log
+        jitter = self.rng_c.uniform(0.0, log.logc_lag_jitter_s) if log.logc_lag_jitter_s > 0 else 0.0
+        return log.logc_lag_offset_s + jitter
+
     # --- イベント ---
 
-    def intake(self, t: float, material: Material) -> None:
+    def intake(self, t: float, material: Material, t_ready: float) -> None:
         self.log_a.append((t, [self.stamp(t), material.material_id, material.process_id, material.cassette_id]))
+        self.intakes.append({
+            "material_id": material.material_id, "t_ready": t_ready, "t_intake": t, "delay_s": t - t_ready,
+        })
 
     def transfer(self, t: float, material: Material, src: Position | None, dst: Position | None) -> None:
         """src から dst へのマテリアルの移動．src=None は取り込み，dst=None は払い出し."""
@@ -94,21 +115,55 @@ class Recorder:
             self._action(pos, action, pos.label, t_start, t_start + duration)
 
     def robot_op(self, robot_id: str, hand: Position, hand_name: str, action: str, target: str,
-                 t_start: float, t_end: float) -> None:
+                 material_id: str, t_start: float, t_end: float) -> None:
         self.robot_ops.append({
             "robot_id": robot_id, "hand": hand_name, "unit_id": hand.unit_id, "pos_id": hand.pos_id,
-            "action": action, "target": target, "t_start": t_start, "t_end": t_end,
+            "action": action, "target": target, "material_id": material_id, "t_start": t_start, "t_end": t_end,
         })
-        if hand.kind in self.config.log.logc_kinds:
+        log = self.config.log
+        if hand.kind in log.logc_kinds and (action != "MOVE" or log.logc_moves):
             self._action(hand, action, target, t_start, t_end)
 
     def _action(self, pos: Position, action: str, target: str, t_start: float, t_end: float) -> None:
-        if self.rng.random() < self.config.log.logc_missing_ratio:
+        if self.rng_c.random() < self.config.log.logc_missing_ratio:
             action, target = "", ""
         for t, event in ((t_start, "START"), (t_end, "END")):
-            self.log_c.append((t, [self.stamp(t), pos.unit_id, pos.pos_id, event, action, target]))
+            stamped = t + self._logc_lag()
+            self.log_c.append((stamped, [self.stamp(stamped), pos.unit_id, pos.pos_id, event, action, target]))
 
     # --- 集計・出力 ---
+
+    def robot_waits(self) -> list[dict[str, Any]]:
+        """ロボットの待ち．動作が終わってから次の動作（移動を含む）が始まるまでを，種類で分ける."""
+        kinds = {p.label: p.kind for p in self.topology.positions}
+        by_robot: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for op in self.robot_ops:
+            by_robot[op["robot_id"]].append(op)
+        waits = []
+        for robot_id, ops in by_robot.items():
+            held: set[str] = set()
+            for i, (prev, nxt) in enumerate(zip(ops, ops[1:]), start=1):
+                if prev["action"] == "PICK":
+                    held.add(prev["hand"])
+                elif prev["action"] == "PLACE":
+                    held.discard(prev["hand"])
+                if nxt["t_start"] <= prev["t_end"]:
+                    continue
+                # 待ちの理由は，移動を除いた次の動作で決まる
+                work = next((ops[j] for j in range(i, len(ops)) if ops[j]["action"] != "MOVE"), None)
+                if work is None:
+                    continue
+                if held:
+                    category = WAIT_HOLD
+                elif work["action"] == "PICK" and kinds[work["target"]] == "process":
+                    category = WAIT_PROCESS
+                else:
+                    category = WAIT_IDLE
+                waits.append({
+                    "robot_id": robot_id, "t_start": prev["t_end"], "t_end": nxt["t_start"], "category": category,
+                    "next_action": work["action"], "next_target": work["target"],
+                })
+        return waits
 
     def summary(self, horizon: float, n_input: int, n_completed: int) -> dict[str, Any]:
         per_pos: dict[str, dict[str, Any]] = {}
@@ -126,15 +181,19 @@ class Recorder:
         per_robot: dict[str, float] = {r.robot_id: 0.0 for r in self.topology.robots}
         for op in self.robot_ops:
             per_robot[op["robot_id"]] += op["t_end"] - op["t_start"]
+        waits = {r.robot_id: dict.fromkeys(WAIT_CATEGORIES, 0.0) for r in self.topology.robots}
+        for w in self.robot_waits():
+            waits[w["robot_id"]][w["category"]] += w["t_end"] - w["t_start"]
         return {
             "horizon_s": horizon,
             "n_input": n_input,
             "n_completed": n_completed,
             "positions": per_pos,
             "robots_busy_s": per_robot,
+            "robots_wait_s": waits,
         }
 
-    def write(self, out_dir: Path, summary: dict[str, Any]) -> None:
+    def write(self, out_dir: Path, summary: dict[str, Any], capacity: dict[str, Any]) -> None:
         out_dir.mkdir(parents=True, exist_ok=True)
         start = self.config.start
 
@@ -150,8 +209,13 @@ class Recorder:
                    [[_num(r[k]) for k in TRUTH_OCCUPANCY_HEADER] for r in self.occupancy])
         _write_csv(out_dir / "truth_robot_ops.csv", TRUTH_ROBOT_OPS_HEADER,
                    [[_num(r[k]) for k in TRUTH_ROBOT_OPS_HEADER] for r in self.robot_ops])
-        with open(out_dir / "truth_summary.json", "w", encoding="utf-8") as f:
-            json.dump(summary, f, ensure_ascii=False, indent=2)
+        _write_csv(out_dir / "truth_robot_waits.csv", TRUTH_ROBOT_WAITS_HEADER,
+                   [[_num(r[k]) for k in TRUTH_ROBOT_WAITS_HEADER] for r in self.robot_waits()])
+        _write_csv(out_dir / "truth_intake.csv", TRUTH_INTAKE_HEADER,
+                   [[_num(r[k]) for k in TRUTH_INTAKE_HEADER] for r in self.intakes])
+        for name, data in (("truth_summary.json", summary), ("truth_capacity.json", capacity)):
+            with open(out_dir / name, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
 
     def _log_x_rows(self) -> list[list[Any]]:
         hand_owner = {}

@@ -36,6 +36,10 @@ class Op:
     def target_label(self, sim: Simulator) -> str:
         raise NotImplementedError
 
+    def material_id(self, robot: Robot) -> str:
+        """動作の対象のマテリアル．complete の前に呼ぶ．移動は空欄."""
+        return ""
+
 
 @dataclass(eq=False)
 class Move(Op):
@@ -79,6 +83,9 @@ class Pick(Op):
     def target_label(self, sim: Simulator) -> str:
         return self.pos.label
 
+    def material_id(self, robot: Robot) -> str:
+        return self.pos.material.material_id
+
 
 @dataclass(eq=False)
 class Place(Op):
@@ -99,6 +106,9 @@ class Place(Op):
 
     def target_label(self, sim: Simulator) -> str:
         return self.pos.label
+
+    def material_id(self, robot: Robot) -> str:
+        return robot.hands[self.hand].material.material_id
 
 
 @dataclass(eq=False)
@@ -126,3 +136,6 @@ class PlaceNext(Op):
 
     def target_label(self, sim: Simulator) -> str:
         return self._chosen.label if self._chosen else ""
+
+    def material_id(self, robot: Robot) -> str:
+        return robot.hands[self.hand].material.material_id

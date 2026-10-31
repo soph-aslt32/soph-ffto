@@ -76,6 +76,19 @@ def test_invalid_config(old, new, message):
         load_config_str(MINIMAL.replace(old, new, 1))
 
 
+def test_log_c_defaults_match_real_logs():
+    config = load_config_str(MINIMAL)
+    assert config.log.logc_moves is False
+    assert config.log.logc_lag_offset_s == 0.0
+    assert config.log.logc_lag_jitter_s == 0.0
+
+
+def test_negative_jitter_is_rejected():
+    text = MINIMAL.replace("[simulation]", "[log]\nlogc_lag_jitter_s = -1.0\n[simulation]", 1)
+    with pytest.raises(ConfigError, match="logc_lag_jitter_s"):
+        load_config_str(text)
+
+
 def test_unknown_policy():
     with pytest.raises(ConfigError, match="policies.exchange"):
         Simulator(with_policies(sample_config(), exchange="unknown"))

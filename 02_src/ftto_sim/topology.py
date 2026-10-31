@@ -78,10 +78,7 @@ class Robot:
         return "lower" if hand == "upper" else "upper"
 
     def move_time(self, stages: list[Stage], src: int, dst: int) -> float:
-        if src == dst:
-            return 0.0
-        pair = frozenset((stages[src].name, stages[dst].name))
-        return self.config.move_overrides.get(pair, self.config.move_s)
+        return self.config.move_time(stages[src].name, stages[dst].name)
 
 
 @dataclass

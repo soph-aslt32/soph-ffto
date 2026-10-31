@@ -1,3 +1,4 @@
+import dataclasses
 from collections import defaultdict
 
 import pytest
@@ -11,6 +12,7 @@ from .helpers import (
     run,
     sample_config,
     with_log,
+    with_policies,
     without_jitter,
 )
 
@@ -245,3 +247,117 @@ def test_deadlock_is_detected():
     # 1台のロボットが Upper で s0→s1 と s2→s3 を担うため，入れ替え後に s2 の空きを待ったまま止まる
     with pytest.raises(DeadlockError, match="デッドロック"):
         run(load_config_str(DEADLOCK))
+
+
+def _saturated_interval(config):
+    times = sorted(r["t_out"] for r in run(config).recorder.occupancy
+                   if r["stage"] == "unload" and r["t_out"] is not None)
+    times = times[len(times) // 10:]
+    return (times[-1] - times[0]) / (len(times) - 1)
+
+
+@pytest.fixture(scope="module")
+def pre_moving():
+    # 間隔を proc1 の処理時間より短くし，次のマテリアルを持って層の前で待つ状況を作る
+    return run(sample_config(interval_s=45.0, process_id_weights={"C": 1.0}))
+
+
+def test_robot_moves_to_the_layer_with_next_material_and_waits_there(pre_moving):
+    ops = [op for op in pre_moving.recorder.robot_ops if op["robot_id"] == "R1"]
+    waited = 0
+    for a, b, c in zip(ops, ops[1:], ops[2:]):
+        if (a["hand"], a["action"], b["action"], c["action"]) == ("upper", "PICK", "MOVE", "PICK"):
+            assert b["t_start"] == a["t_end"]  # 取ったらすぐ移動する
+            assert b["target"] == "proc1"
+            waited += c["t_start"] > b["t_end"]  # 待ちは移動の後に入る
+    assert waited > 50
+
+
+def test_wait_at_source_policy_moves_after_layer_is_ready():
+    config = with_policies(sample_config(interval_s=45.0, process_id_weights={"C": 1.0}),
+                           dispatch="upstream_first_wait_at_source")
+    ops = [op for op in run(config).recorder.robot_ops if op["robot_id"] == "R1"]
+    gaps = [b["t_start"] - a["t_end"] for a, b in zip(ops, ops[1:])
+            if (a["hand"], a["action"], b["action"]) == ("upper", "PICK", "MOVE") and b["target"] == "proc1"]
+    assert max(gaps) > 10
+
+
+@pytest.mark.parametrize(("pid", "dispatch"), [
+    ("A", "upstream_first"), ("B", "upstream_first"), ("C", "upstream_first"),
+    ("A", "upstream_first_wait_at_source"), ("C", "upstream_first_wait_at_source"),
+])
+def test_capacity_matches_saturated_run(pid, dispatch):
+    config = with_policies(sample_config(interval_s=1.0, process_id_weights={pid: 1.0}), dispatch=dispatch)
+    config = dataclasses.replace(config, duration_s=24 * 3600)
+    capacity = run(config).capacity
+    assert _saturated_interval(config) == pytest.approx(capacity["line"][pid]["T_min_s"], abs=0.2)
+
+
+def test_capacity_values():
+    capacity = run(sample_config()).capacity
+    assert capacity["waits_at_target"] is True
+    assert capacity["robots"]["R1"]["W_s"] == 19.0
+    assert capacity["stages"]["proc1"]["c_s"] == {"A": 44.0, "B": 64.0, "C": 84.0}
+    assert capacity["stages"]["proc2"]["C_s"]["A"] == pytest.approx(154.0 / 3)
+    assert capacity["line"]["A"]["bottleneck"] == "proc2"
+    assert capacity["line"]["C"]["bottleneck"] == "proc1"
+
+
+def test_log_c_has_no_move_by_default_but_truth_keeps_it(normal):
+    assert {r[4] for r in log_rows(normal.recorder.log_c)} <= {"PICK", "PLACE", ""}
+    assert any(op["action"] == "MOVE" for op in normal.recorder.robot_ops)
+
+
+def test_log_c_can_include_moves():
+    result = run(with_log(sample_config(), logc_moves=True, logc_missing_ratio=0.0))
+    assert "MOVE" in {r[4] for r in log_rows(result.recorder.log_c)}
+
+
+def test_log_c_constant_lag_shifts_stamps_only():
+    plain = run(with_log(sample_config(), logc_lag_offset_s=0.0, logc_lag_jitter_s=0.0))
+    shifted = run(with_log(sample_config(), logc_lag_offset_s=3.0, logc_lag_jitter_s=0.0))
+    assert [r[0] + 3 for r in log_rows(plain.recorder.log_c)] == [r[0] for r in log_rows(shifted.recorder.log_c)]
+    assert log_rows(plain.recorder.log_b) == log_rows(shifted.recorder.log_b)
+
+
+def test_log_c_jitter_changes_action_length_only_within_range():
+    result = run(with_log(sample_config(), logc_lag_offset_s=0.0, logc_lag_jitter_s=0.5, logc_missing_ratio=0.0))
+    starts = {}
+    lengths = []
+    for t, unit, pos, event, _, _ in log_rows(result.recorder.log_c):
+        if event == "START":
+            starts[(unit, pos)] = t
+        else:
+            lengths.append(t - starts[(unit, pos)])
+    assert set(lengths) <= {1, 2, 3}  # 2 s の動作，ばらつき 0〜0.5 s，秒への切り捨て
+
+
+def test_robot_waits_are_classified():
+    wait = run(sample_config(interval_s=45.0, process_id_weights={"C": 1.0})).summary["robots_wait_s"]["R1"]
+    assert wait["hold"] > 0
+    calm = run(sample_config(interval_s=600.0)).summary["robots_wait_s"]["R1"]
+    assert calm["hold"] == 0
+    assert calm["idle"] > calm["process"] > 0
+
+
+def test_ops_and_waits_cover_the_whole_period(normal):
+    for robot_id, busy in normal.summary["robots_busy_s"].items():
+        waits = sum(normal.summary["robots_wait_s"][robot_id].values())
+        ops = [op for op in normal.recorder.robot_ops if op["robot_id"] == robot_id]
+        assert busy + waits == pytest.approx(ops[-1]["t_end"] - ops[0]["t_start"], abs=1e-6)
+
+
+def test_robot_ops_record_target_material(normal):
+    for op in normal.recorder.robot_ops:
+        assert (op["material_id"] == "") == (op["action"] == "MOVE")
+
+
+def test_intake_delay_is_recorded(normal, congested):
+    assert all(r["delay_s"] == 0 for r in normal.recorder.intakes)
+    assert max(r["delay_s"] for r in congested.recorder.intakes) > 0
+
+
+def test_output_files(tmp_path, normal):
+    normal.write(tmp_path)
+    names = {p.name for p in tmp_path.iterdir()}
+    assert {"truth_capacity.json", "truth_robot_waits.csv", "truth_intake.csv"} <= names

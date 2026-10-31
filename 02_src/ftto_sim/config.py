@@ -37,6 +37,12 @@ class RobotConfig:
     def hand_key(self, hand: str) -> tuple[str, str]:
         return self.upper if hand == "upper" else self.lower
 
+    def move_time(self, src: str, dst: str) -> float:
+        """段 src から段 dst への移動時間."""
+        if src == dst:
+            return 0.0
+        return self.move_overrides.get(frozenset((src, dst)), self.move_s)
+
 
 @dataclass(frozen=True)
 class ServiceConfig:
@@ -82,6 +88,9 @@ class LogConfig:
     lag_max_s: float
     logc_missing_ratio: float
     logc_kinds: tuple[str, ...]
+    logc_moves: bool = False  # MOVE の行を出すか．実ログには記録されない
+    logc_lag_offset_s: float = 0.0  # ログBに対するログCの打刻のずれ（一定分．負も可）
+    logc_lag_jitter_s: float = 0.0  # ログCの打刻の行ごとのばらつき（0〜この値の一様分布）
 
 
 @dataclass(frozen=True)
@@ -163,6 +172,9 @@ def _parse_log(t: dict[str, Any]) -> LogConfig:
         lag_max_s=float(t.get("lag_max_s", 0.0)),
         logc_missing_ratio=float(t.get("logc_missing_ratio", 0.0)),
         logc_kinds=tuple(str(k) for k in t.get("logc_kinds", ["hand"])),
+        logc_moves=bool(t.get("logc_moves", False)),
+        logc_lag_offset_s=float(t.get("logc_lag_offset_s", 0.0)),
+        logc_lag_jitter_s=float(t.get("logc_lag_jitter_s", 0.0)),
     )
 
 
@@ -293,3 +305,5 @@ def _validate(c: SimConfig) -> None:
         raise ConfigError("log の打刻ラグは 0 <= lag_min_s <= lag_max_s にしてください")
     if not 0 <= c.log.logc_missing_ratio <= 1:
         raise ConfigError("log.logc_missing_ratio は 0〜1 にしてください")
+    if c.log.logc_lag_jitter_s < 0:
+        raise ConfigError("log.logc_lag_jitter_s は 0 以上にしてください")

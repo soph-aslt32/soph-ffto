@@ -21,15 +21,18 @@ class Task:
 
     fetch:   段の Pos から処理済みマテリアルを空のハンドで取る
     deliver: ハンドのマテリアルを次段の Pos に置く（入れ替えを含みうる）
+    advance: マテリアルを持ったまま，置き先の段の前まで移動する
     """
 
-    kind: str  # "fetch" | "deliver"
+    kind: str  # "fetch" | "deliver" | "advance"
     hand: str
     pos: Position
     source_index: int  # 搬送元の段
 
 
 class DispatchPolicy(Protocol):
+    waits_at_target: bool  # 置き先が処理中のとき，置き先の前で待つか
+
     def select(self, robot: Robot, sim: Simulator) -> Task | None:
         ...
 
@@ -62,10 +65,34 @@ def candidate_tasks(robot: Robot, sim: Simulator) -> list[Task]:
 
 
 class UpstreamFirst:
-    """上流優先（仮ルール）：搬送元の段がより上流の作業を先に行う."""
+    """上流優先（仮ルール）：搬送元の段がより上流の作業を先に行う.
+
+    着手できる作業が無ければ，マテリアルを持ったまま置き先の段の前まで移動して待つ（ユーザー確認済み）．
+    """
+
+    waits_at_target = True
 
     def select(self, robot: Robot, sim: Simulator) -> Task | None:
         tasks = candidate_tasks(robot, sim)
         if not tasks:
-            return None
+            return self._advance(robot, sim)
         return min(tasks, key=lambda t: (t.source_index, HANDS.index(t.hand)))
+
+    def _advance(self, robot: Robot, sim: Simulator) -> Task | None:
+        for hand in HANDS:
+            held = robot.hands[hand].material
+            if held is None:
+                continue
+            target = sim.topology.stages[held.stage_index + 1]
+            if robot.location != target.index:
+                return Task("advance", hand, target.positions[0], held.stage_index)
+        return None
+
+
+class UpstreamFirstWaitAtSource(UpstreamFirst):
+    """比較用：置き先が処理中なら，マテリアルを取った場所で待ち，空いてから移動する."""
+
+    waits_at_target = False
+
+    def _advance(self, robot: Robot, sim: Simulator) -> Task | None:
+        return None

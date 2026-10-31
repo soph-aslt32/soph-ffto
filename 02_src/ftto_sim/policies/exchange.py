@@ -51,6 +51,8 @@ class BasicExchange:
         assert pos.stage is not None
         if task.kind == "fetch":
             return [Move(pos.stage.index, task.hand), Pick(task.hand, pos)]
+        if task.kind == "advance":
+            return [Move(pos.stage.index, task.hand)]
         if pos.is_empty:
             return [Move(pos.stage.index, task.hand), Place(task.hand, pos)]
         other = robot.other_hand(task.hand)

@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from ..config import ConfigError, PolicyConfig
-from .dispatch import DispatchPolicy, UpstreamFirst
+from .dispatch import DispatchPolicy, UpstreamFirst, UpstreamFirstWaitAtSource
 from .exchange import BasicExchange, ExchangeRule
 from .layer_select import LayerSelectPolicy, LowestIndex
 
 # 新しいルールは，クラスを実装してここに名前を登録すると設定ファイルから選べる
-DISPATCH_POLICIES: dict[str, type] = {"upstream_first": UpstreamFirst}
+DISPATCH_POLICIES: dict[str, type] = {
+    "upstream_first": UpstreamFirst,
+    "upstream_first_wait_at_source": UpstreamFirstWaitAtSource,
+}
 EXCHANGE_RULES: dict[str, type] = {"basic": BasicExchange}
 LAYER_SELECT_POLICIES: dict[str, type] = {"lowest_index": LowestIndex}
 

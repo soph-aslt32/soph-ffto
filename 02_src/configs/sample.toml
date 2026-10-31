@@ -25,9 +25,12 @@ lag_min_s = 0.0               # 上流OUT〜下流INの打刻ラグ（一様分�
 lag_max_s = 2.0
 logc_missing_ratio = 0.5      # ログCで動作内容・行き先が欠ける割合
 logc_kinds = ["hand"]         # ログCに動作開始・終了を出す Pos の種類（例: ["hand", "process"]）
+logc_moves = false            # ログCに MOVE の行を出すか（実ログには記録されない）
+logc_lag_offset_s = 1.0       # ログBに対するログCの打刻のずれ（一定分．負も可）
+logc_lag_jitter_s = 0.5       # ログCの打刻の行ごとのばらつき（0〜この値の一様分布）
 
 [policies]
-dispatch = "upstream_first"   # ロボット作業の優先順位（仮ルール）
+dispatch = "upstream_first"   # ロボット作業の優先順位（仮ルール）．置き先が処理中なら，その前まで移動して待つ
 exchange = "basic"            # 入れ替え動作の手順
 layer_select = "lowest_index" # 並列層の選択
 
