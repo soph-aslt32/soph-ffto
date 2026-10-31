@@ -3,6 +3,7 @@
 ## 推定アルゴリズム
 
 - 方針と確認事項は `01_doc/algorithm.md` を参照
+- 実装は `02_src/ftto_est/`．構成は「推定処理の実装の構成」を参照
 - 初期のたたき台（受け渡しごとの待ち判定，構成比で平均した能力）は，統合案で置き換えた
 
 ## 合成データ生成器の仕様
@@ -134,6 +135,16 @@
 - ルールを追加する場合は，クラスを実装して `ftto_sim/policies/__init__.py` に名前を登録すると，設定ファイルの `[policies]` から選べる
 - ログCに他の Pos の動作開始・終了を出す場合は，設定の `log.logc_kinds` に Pos の種類を加える（例：`["hand", "process"]`）
 
+### 検証用の設定
+
+| 設定 | 内容 |
+|---|---|
+| `input.interval_schedule` | (カセット数, 取り込み間隔) の列．順に繰り返す．低負荷と高負荷を混ぜるのに使う |
+| `robots.jitter_s` | 動作時間のばらつき（標準偏差） |
+| `robots.disturbance_ratio`，`robots.disturbance_s` | 動作が外乱で伸びる割合と時間 |
+| `log.logc_row_missing_ratio` | ログCの行そのものが欠ける割合 |
+| `log.shuffle_within_second` | 同じ秒の中で行の順序を乱す |
+
 ### 出力ファイル
 
 | ファイル | 内容 |
@@ -150,6 +161,28 @@
 | `truth_summary.json` | Pos ごとの占有時間・処理時間，ロボットごとの稼働時間と待ち時間 |
 
 - ログの時刻は秒単位（`YYYY-MM-DD HH:MM:SS`）．真値の時刻はシミュレーション開始からの秒（小数）
+
+## 推定処理の実装の構成
+
+| ファイル | 役割 | algorithm.md |
+|---|---|---|
+| `ftto_est/logs.py` | 標準形式のログの読み込み | － |
+| `ftto_est/topology.py` | 段・ハンド・経路の組み立て | 1.1 |
+| `ftto_est/actions.py` | ログCの動作とログBのイベントの対応付け，ログ間のラグ | 1.2，1.3 |
+| `ftto_est/motion.py` | 動作の長さ，移動時間，飽和サイクル W（手順は `CycleRule` で差し替えられる） | 2，3.1 |
+| `ftto_est/service.py` | 処理時間（手空きサンプル，区間） | 5，6.3 |
+| `ftto_est/waits.py` | ロボットの待ちの内訳 | 3.2 |
+| `ftto_est/capacity.py` | Pos・段の能力 | 6 |
+| `ftto_est/margin.py` | カセットごとの入場間隔，余裕，稼働率，ハンドの保持時間 | 3.3，4，7.1 |
+| `ftto_est/bottleneck.py` | 律速の判定，ライン限界，校正 | 7.2，8 |
+| `ftto_est/trend.py` | 動作の長さと処理時間の週ごとの監視 | 8 |
+| `ftto_est/quality.py` | 推定値と品質の印 | 9 |
+| `ftto_est/report.py` | 結果の出力 | － |
+| `ftto_est/pipeline.py` | 一連の処理 | － |
+| `tools/verify_estimate.py` | 合成データでの検証．生成器と推定処理の両方を使う | 12 |
+
+- 推定処理は `ftto_sim` に依存しない．ログだけを読む
+- 1か月分（30,000枚，約100万行）の処理は読み込みと出力を含めて約5 s で，突出して重い処理も無い．このため Rust へは移していない
 
 ## 参考文献（ウェブ調査，未精読のものを含む）
 
