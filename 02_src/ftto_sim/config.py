@@ -8,7 +8,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-HANDS = ("upper", "lower")
+LOWER = "lower"  # 処理済みのマテリアルを下流へ運ぶハンド
+HANDS = ("upper", LOWER)
 DEFAULT_PROCESS_KEY = "*"
 
 

@@ -492,3 +492,24 @@ def test_late_signal_delays_the_pick():
     done = next(r["t_service_end"] for r in result.recorder.occupancy
                 if r["material_id"] == pick["material_id"] and r["unit_id"] == "U3")
     assert pick["t_start"] == pytest.approx(done + 2.0)  # 原点から 3 s，信号は 1 s 前
+
+
+def test_lower_with_a_processed_material_goes_downstream_first():
+    # 信号で先に取り出したあと，上流に次のマテリアルが届いていても，下流へ運んでから取りに行く
+    config = with_accept_lead(sample_config(interval_s=86.37, process_id_weights={"C": 1.0}), 20.0)
+    result = run(without_jitter(config))
+    ops = [op for op in result.recorder.robot_ops if op["robot_id"] == "R1" and op["action"] != "MOVE"]
+    for prev, nxt in zip(ops, ops[1:]):
+        if prev["action"] == "PICK" and prev["hand"] == "lower" and nxt["action"] == "PICK":
+            pytest.fail(f"Lower が持ったまま別のマテリアルを取った: {prev} {nxt}")
+
+
+def test_lower_waits_in_front_of_a_blocked_downstream():
+    # 下流が埋まっていても，上流へ取りに行かず，下流の前まで移動して待つ
+    config = sample_config(interval_s=45.0, process_id_weights={"A": 1.0})
+    result = run(config)
+    ops = [op for op in result.recorder.robot_ops if op["robot_id"] == "R1"]
+    assert any(w["category"] == "hold" and w["next_target"] == "U4-P1" for w in result.recorder.robot_waits())
+    for prev, nxt in zip(ops, ops[1:]):
+        if prev["hand"] == "lower" and prev["action"] == "PICK":
+            assert nxt["action"] != "MOVE" or nxt["target"] != "load"

@@ -94,8 +94,23 @@ def _accept(interval: float, lead: float, home: float | None = None, **input_kw:
     return build
 
 
+HOME_BY_STAGE = {"load": 4.0, "proc1": 2.0, "buffer": 3.0, "proc2": 1.5, "unload": 4.5}
+
+
+def _home_by_stage(interval: float, lead: float) -> Callable[[SimConfig], SimConfig]:
+    """原点との移動時間が段ごとに違う構成."""
+    def build(c: SimConfig) -> SimConfig:
+        c = _accept(interval, lead)(c)
+        robots = tuple(dataclasses.replace(r, home_move_s=3.0, home_overrides=HOME_BY_STAGE) for r in c.robots)
+        return dataclasses.replace(c, robots=robots)
+    return build
+
+
 def _slow_robot(robot_id: str, interval: float) -> Callable[[SimConfig], SimConfig]:
-    """処理を短くして，ロボット robot_id だけを遅くする（ロボットが律速する2台の構成）."""
+    """処理を短くして，ロボット robot_id だけを遅くする（ロボットが律速する2台の構成）.
+
+    処理が移動より短いと入れ替えが起きず，原点との往復の分だけ限界が W より長くなる．ここでは判定を単独で見るので，原点を持たせない．
+    """
     def build(c: SimConfig) -> SimConfig:
         c = _input(interval_s=interval, process_id_weights={"A": 1.0})(c)
         stages = tuple(
@@ -103,7 +118,10 @@ def _slow_robot(robot_id: str, interval: float) -> Callable[[SimConfig], SimConf
             if s.service.jitter_s > 0 else s
             for s in c.stages
         )
-        robots = tuple(dataclasses.replace(r, pick_s=3.0) if r.robot_id == robot_id else r for r in c.robots)
+        robots = tuple(
+            dataclasses.replace(r, pick_s=3.0 if r.robot_id == robot_id else r.pick_s, home_move_s=None)
+            for r in c.robots
+        )
         return dataclasses.replace(c, stages=stages, robots=robots)
     return build
 
@@ -265,7 +283,7 @@ def scenarios() -> list[Scenario]:
         Scenario("interval", f"間隔 {t}", _input(interval_s=t))
         for t in (55.37, 62.37, 70.37, 86.37, 120.37, 137.37, 200.37, 600.37, 60.0, 86.4, 120.0)
     ]
-    for pid, intervals in (("A", (50.37, 51.07, 51.67, 52.37)), ("B", (66.37, 67.37, 68.37, 69.37)),
+    for pid, intervals in (("A", (50.37, 51.07, 51.67, 52.37, 53.37, 54.37)), ("B", (66.37, 67.37, 68.37, 69.37)),
                            ("C", (82.37, 83.37, 84.37, 85.37))):
         rows += [
             Scenario("judge", f"{pid} のみ {t}", _input(interval_s=t, process_id_weights={pid: 1.0}))
@@ -296,6 +314,10 @@ def scenarios() -> list[Scenario]:
         Scenario("home", f"原点{home:.0f}s 信号{lead:.0f}s前 間隔{t}", _accept(t, lead, home))
         for home, lead in ((3.0, 0.0), (3.0, 2.0), (3.0, 5.0), (5.0, 2.0), (5.0, 20.0))
         for t in (60.37, 86.37, 137.37, 600.37)
+    ]
+    rows += [
+        Scenario("home", f"原点が段ごとに違う 信号{lead:.0f}s前 間隔{t}", _home_by_stage(t, lead))
+        for lead in (0.0, 3.0) for t in (86.37, 137.37)
     ]
     rows += [
         Scenario("nosetting", f"設定なし 原点{home:.0f}s 信号{lead:.0f}s前 間隔{t}", _accept(t, lead, home),

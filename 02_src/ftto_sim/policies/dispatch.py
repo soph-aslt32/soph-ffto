@@ -1,6 +1,7 @@
 """ロボットが次に行う作業を選ぶルール（作業の優先順位）.
 
 正式な優先順位はユーザー側で情報収集中．確定までは上流優先（UpstreamFirst）を仮ルールとする．
+ただし Lower が処理済みマテリアルを持っているときは，下流への搬送を優先する（ユーザー確認済み）．
 """
 
 from __future__ import annotations
@@ -8,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
-from ..config import HANDS
+from ..config import HANDS, LOWER
 from ..topology import HOME, Position, Robot
 
 if TYPE_CHECKING:
@@ -69,6 +70,7 @@ def candidate_tasks(robot: Robot, sim: Simulator) -> list[Task]:
 class UpstreamFirst:
     """上流優先（仮ルール）：搬送元の段がより上流の作業を先に行う.
 
+    ただし Lower が処理済みマテリアルを持っているときは，下流への搬送を優先する（ユーザー確認済み）．
     着手できる作業が無ければ，マテリアルを持ったまま置き先の段の前まで移動して待つ（ユーザー確認済み）．
     """
 
@@ -76,8 +78,13 @@ class UpstreamFirst:
 
     def select(self, robot: Robot, sim: Simulator) -> Task | None:
         tasks = candidate_tasks(robot, sim)
+        if not robot.hands[LOWER].is_empty:
+            for task in tasks:
+                if task.kind == "deliver" and task.hand == LOWER:
+                    return task
+            return self._advance(robot, sim, (LOWER,))
         if not tasks:
-            return self._advance(robot, sim) or self._go_home(robot)
+            return self._advance(robot, sim, HANDS) or self._go_home(robot)
         return min(tasks, key=lambda t: (t.source_index, HANDS.index(t.hand)))
 
     def _go_home(self, robot: Robot) -> Task | None:
@@ -88,8 +95,8 @@ class UpstreamFirst:
             return None
         return Task("home", HANDS[0], None, -1)
 
-    def _advance(self, robot: Robot, sim: Simulator) -> Task | None:
-        for hand in HANDS:
+    def _advance(self, robot: Robot, sim: Simulator, hands: tuple[str, ...]) -> Task | None:
+        for hand in hands:
             held = robot.hands[hand].material
             if held is None:
                 continue
@@ -104,5 +111,5 @@ class UpstreamFirstWaitAtSource(UpstreamFirst):
 
     waits_at_target = False
 
-    def _advance(self, robot: Robot, sim: Simulator) -> Task | None:
+    def _advance(self, robot: Robot, sim: Simulator, hands: tuple[str, ...]) -> Task | None:
         return None

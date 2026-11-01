@@ -20,7 +20,7 @@ STATUS_STEADY = "律速"
 STATUS_TRANSIENT = "過渡"
 STATUS_MISMATCH = "不一致"
 
-ROBOT_LIMIT_MARGIN_S = 1.0  # 空いている時間がこれ未満なら，ロボットが能力いっぱいで動いている
+ROBOT_LIMIT_MARGIN_S = 0.5  # 空いている時間がこれ未満なら，ロボットが能力いっぱいで動いている
 TIE_RATIO = 0.95  # 能力の上位2つの比がこれ以上なら拮抗とみなす
 TIE_SLOTS = 2  # 間の保持枠がこれ以下なら，互いに干渉する
 
