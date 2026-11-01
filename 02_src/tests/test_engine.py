@@ -425,3 +425,37 @@ def test_shuffled_rows_stay_within_their_second(tmp_path):
     shuffled = (b / "log_c.csv").read_text(encoding="utf-8").splitlines()
     assert plain != shuffled
     assert sorted(plain) == sorted(shuffled)
+
+
+def with_accept_lead(config, lead):
+    stages = tuple(
+        dataclasses.replace(s, service=dataclasses.replace(s.service, accept_lead_s=lead)) for s in config.stages
+    )
+    return dataclasses.replace(config, stages=stages)
+
+
+def test_layer_about_to_finish_accepts_the_next_material():
+    # 投入間隔 70 s，処理 150 s．信号が無ければ P7, P8, P9 を順に使う．信号があると P9 より先に P7 が再び選ばれる
+    config = sample_config(interval_s=70.0, process_id_weights={"A": 1.0})
+    plain = layers_in_order(run(without_jitter(config)), "U5", PROC2)
+    signalled = layers_in_order(run(with_accept_lead(without_jitter(config), 30.0)), "U5", PROC2)
+    assert plain[:6] == ["P7", "P8", "P9", "P7", "P8", "P9"]
+    assert signalled[:4] == ["P7", "P8", "P7", "P8"]
+
+
+def test_exchange_waits_for_the_layer_to_finish():
+    # 信号が先に出ても，処理が終わるまでは取らない
+    config = with_accept_lead(sample_config(interval_s=70.0, process_id_weights={"A": 1.0}), 30.0)
+    result = run(config)
+    done = {(r["material_id"], r["unit_id"], r["pos_id"]): r["t_service_end"] for r in result.recorder.occupancy}
+    picks = [op for op in result.recorder.robot_ops if op["action"] == "PICK" and op["target"].startswith("U5-P")]
+    assert picks
+    for op in picks:
+        unit, pos = op["target"].split("-")
+        assert op["t_start"] >= done[(op["material_id"], unit, pos)] - 1e-9
+
+
+def test_default_accept_signal_keeps_the_previous_behavior():
+    a = run(sample_config())
+    b = run(with_accept_lead(sample_config(), 0.0))
+    assert a.recorder.robot_ops == b.recorder.robot_ops

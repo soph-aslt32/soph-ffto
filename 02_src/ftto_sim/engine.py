@@ -139,6 +139,7 @@ class Simulator:
             material = src.material
             src.material = None
             src.finished = False
+            src.accepting = False
         assert material is not None
         self.recorder.transfer(self.now, material, src, dst)
         if dst is None:
@@ -159,10 +160,16 @@ class Simulator:
             duration = max(0.0, self._rng_service.gauss(duration, service.jitter_s))
         self.recorder.service(material, pos, self.now, duration)
         self._schedule(self.now + duration, lambda: self._on_service_end(pos))
+        if service.accept_lead_s > 0:
+            self._schedule(self.now + max(duration - service.accept_lead_s, 0.0), lambda: self._on_accept_ready(pos))
+
+    def _on_accept_ready(self, pos: Position) -> None:
+        pos.accepting = True
 
     def _on_service_end(self, pos: Position) -> None:
         pos.finished = True
         pos.finished_at = self.now
+        pos.accepting = True
 
     def _try_auto_transfers(self) -> bool:
         """ロボットを介さない移動（自動搬送と，最終段からの払い出し）."""

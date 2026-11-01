@@ -30,6 +30,7 @@ class Position:
     material: Material | None = None
     finished: bool = False  # 段での処理（コンベアは搬送）が終わっているか
     finished_at: float = 0.0
+    accepting: bool = False  # 次のマテリアルを受け入れられる（処理済み，またはもうすぐ終わる）
 
     @property
     def key(self) -> tuple[str, str]:

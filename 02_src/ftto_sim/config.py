@@ -52,6 +52,8 @@ class ServiceConfig:
     # 処理ID -> 処理時間．DEFAULT_PROCESS_KEY は処理IDによらない既定値
     times_s: dict[str, float]
     jitter_s: float
+    # 処理が終わるこの時間前から，受け入れ可能の信号を出す（ユーザー確認済み．値は未確認）
+    accept_lead_s: float = 0.0
 
     def base_time(self, process_id: str) -> float:
         if process_id in self.times_s:
@@ -235,7 +237,9 @@ def _parse_service(t: dict[str, Any], where: str) -> ServiceConfig:
         times = {DEFAULT_PROCESS_KEY: float(t["time_s"])}
     else:
         times = {str(k): float(v) for k, v in _require(t, "times_s", where).items()}
-    return ServiceConfig(times_s=times, jitter_s=float(t.get("jitter_s", 0.0)))
+    return ServiceConfig(
+        times_s=times, jitter_s=float(t.get("jitter_s", 0.0)), accept_lead_s=float(t.get("accept_lead_s", 0.0)),
+    )
 
 
 def _parse_stage(t: dict[str, Any], index: int) -> StageConfig:
@@ -305,6 +309,8 @@ def _validate(c: SimConfig) -> None:
                 raise ConfigError(f"段 {s.name} の feed のロボット {s.feed.robot_id} が未定義です")
             if s.feed.hand not in HANDS:
                 raise ConfigError(f"段 {s.name} の feed の hand は upper/lower のいずれかです")
+        if s.service.accept_lead_s < 0:
+            raise ConfigError(f"段 {s.name} の accept_lead_s は 0 以上にしてください")
         for pid in c.input.process_id_weights:
             if pid not in s.service.times_s and DEFAULT_PROCESS_KEY not in s.service.times_s:
                 raise ConfigError(f"段 {s.name} に処理ID {pid} の処理時間がありません")

@@ -13,6 +13,7 @@ import dataclasses
 import statistics
 import sys
 import tempfile
+from bisect import bisect_right
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -59,6 +60,18 @@ def _robots(interval: float, **kw: Any) -> Callable[[SimConfig], SimConfig]:
     def build(c: SimConfig) -> SimConfig:
         c = _input(interval_s=interval)(c)
         return dataclasses.replace(c, robots=tuple(dataclasses.replace(r, **kw) for r in c.robots))
+    return build
+
+
+def _accept(interval: float, lead: float) -> Callable[[SimConfig], SimConfig]:
+    def build(c: SimConfig) -> SimConfig:
+        c = _input(interval_s=interval)(c)
+        stages = tuple(
+            dataclasses.replace(s, service=dataclasses.replace(s.service, accept_lead_s=lead))
+            if s.service.jitter_s > 0 else s
+            for s in c.stages
+        )
+        return dataclasses.replace(c, stages=stages)
     return build
 
 
@@ -242,9 +255,13 @@ def scenarios() -> list[Scenario]:
         Scenario("load", "低負荷＋高負荷", _input(interval_s=120.37, interval_schedule=((200, 120.37), (50, 58.37)))),
         Scenario("load", "低負荷＋律速", _input(interval_s=120.37, interval_schedule=((100, 120.37), (100, 45.37)))),
     ]
+    rows += [
+        Scenario("accept", f"受け入れ信号 {lead:.0f}s前 間隔{t}", _accept(t, lead))
+        for lead in (5.0, 15.0, 30.0) for t in (60.37, 70.37, 86.37, 137.37, 200.37)
+    ]
     for interval in (40.37, 100.37):
         rows.append(Scenario("layout", f"3台 {interval}", lambda c: c, _text(THREE_ROBOTS, interval=interval)))
-    for process, interval in ((3.0, 40.37), (3.0, 15.37), (30.0, 60.37), (30.0, 25.37)):
+    for process, interval in ((3.0, 40.37), (3.0, 18.37), (3.0, 15.37), (30.0, 60.37), (30.0, 25.37)):
         rows.append(Scenario("layout", f"処理{process:.0f}s 間隔{interval}", lambda c: c,
                              _text(SHORT_PROCESS, interval=interval, process=process)))
     return rows
@@ -285,9 +302,34 @@ def _true_stage_intervals(result: SimResult) -> dict[tuple[str, str], float]:
     return out
 
 
+def _voluntary_hold(result: SimResult, config: SimConfig):
+    """保持待ちのうち，段の別の層が空いているものを見分ける関数を返す（実時刻で判定する）."""
+    spans: dict[str, list[tuple[float, float]]] = defaultdict(list)
+    for row in result.recorder.occupancy:
+        spans[f"{row['unit_id']}-{row['pos_id']}"].append((row["t_in"], row["t_out"] or float("inf")))
+    layers = {}
+    for stage in config.stages:
+        if len(stage.positions) > 1:
+            labels = [f"{u}-{p}" for u, p in stage.positions]
+            layers.update(dict.fromkeys(labels, labels))
+    starts = {k: [a for a, _ in sorted(v)] for k, v in spans.items()}
+    ends = {k: [b for _, b in sorted(v)] for k, v in spans.items()}
+
+    def is_free(label: str, t: float) -> bool:
+        i = bisect_right(starts.get(label, []), t) - 1
+        return i < 0 or ends[label][i] <= t
+
+    def voluntary(wait: dict[str, Any]) -> bool:
+        labels = layers.get(wait["next_target"])
+        return labels is not None and any(is_free(label, wait["t_start"]) for label in labels)
+
+    return voluntary
+
+
 def _true_robot_margins(result: SimResult, config: SimConfig) -> dict[tuple[str, str], float]:
     """(カセット, ロボット) ごとの 手空き＋処理待ち（1枚あたりの中央値）."""
     cassette_of = {row[1]: row[3] for _, row in result.recorder.log_a}
+    voluntary = _voluntary_hold(result, config)
     waits: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for w in result.recorder.robot_waits():
         waits[w["robot_id"]].append(w)
@@ -305,7 +347,7 @@ def _true_robot_margins(result: SimResult, config: SimConfig) -> dict[tuple[str,
         for op in entries:
             total = 0.0
             while i < len(rows) and rows[i]["t_start"] < op["t_start"]:
-                if rows[i]["category"] != "hold":
+                if rows[i]["category"] != "hold" or voluntary(rows[i]):
                     total += min(rows[i]["t_end"], op["t_start"]) - rows[i]["t_start"]
                 i += 1
             groups[(cassette_of[op["material_id"]], robot_id)].append(total)
@@ -524,7 +566,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="合成データで推定処理を検証する")
     parser.add_argument("--days", type=float, default=30.0)
     parser.add_argument("--limits", action="store_true", help="飽和実行の真の限界と照合する")
-    parser.add_argument("--only", help="条件のグループ（interval, judge, mode, gap, lag, robot, rows, load, layout）")
+    parser.add_argument("--only", help="条件のグループ（interval, judge, mode, gap, lag, robot, rows, load, accept, layout）")
     args = parser.parse_args()
 
     if args.limits:

@@ -152,6 +152,7 @@ def summary(e: Estimate) -> dict[str, Any]:
              "outbound": s.outbound.robot_id + "/" + s.outbound.name if s.outbound else None}
             for s in e.topology.stages
         ],
+        "unused_layers": [pos_label(p) for p in e.topology.unused_layers],
         "line_limit_by_process": by_process,
         "line_limit_month": month_limit(e.judgements),
         "cassette_status": dict(counts),

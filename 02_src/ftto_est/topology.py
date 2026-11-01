@@ -44,6 +44,7 @@ class Topology:
     stage_of: dict[PosKey, Stage]
     visits: dict[str, list[Visit]]
     warnings: list[str] = field(default_factory=list)
+    unused_layers: list[PosKey] = field(default_factory=list)  # ログXにあるが，ログBに現れなかった層
 
     @property
     def robots(self) -> list[str]:
@@ -107,7 +108,8 @@ def build_topology(logs: Logs) -> Topology:
         for pos in keys:
             stage_of.setdefault(pos, stage)
 
-    # 投入間隔が長いと使われない層がある．同じ Unit の同じ種類の Pos は並列の層とみなす
+    # ログXが真の構成である．投入間隔が長いと使われない層はログBに現れないが，同じ Unit の同じ種類の Pos は並列の層
+    unused_layers: list[PosKey] = []
     for info in logs.positions:
         if info.key in hands or info.key in stage_of:
             continue
@@ -118,7 +120,7 @@ def build_topology(logs: Logs) -> Topology:
         stage = peers[0]
         stage.positions = tuple(sorted((*stage.positions, info.key), key=lambda p: seq[p]))
         stage_of[info.key] = stage
-        warnings.append(f"{pos_label(info.key)} はログBに現れません．同じ Unit の {stage.name} の並列の層として扱います")
+        unused_layers.append(info.key)
 
     # 段の間を担うハンド
     feeds: list[Counter[PosKey]] = [Counter() for _ in stages]
@@ -137,4 +139,4 @@ def build_topology(logs: Logs) -> Topology:
         if stage.index > 0:
             stages[stage.index - 1].outbound = hand
 
-    return Topology(positions, stages, hands, stage_of, visits, warnings)
+    return Topology(positions, stages, hands, stage_of, visits, warnings, unused_layers)

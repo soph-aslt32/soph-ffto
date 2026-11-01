@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 class ExchangeRule(Protocol):
     def can_exchange(self, robot: Robot, hand: str, pos: Position) -> bool:
-        """hand のマテリアルを，処理済みマテリアルが残る pos へ入れ替えで置けるか."""
+        """hand のマテリアルを，受け入れ可能の信号を出している pos へ入れ替えで置けるか."""
         ...
 
     def expand(self, robot: Robot, task: Task, sim: Simulator) -> list[Op]:
@@ -31,6 +31,7 @@ class BasicExchange:
     5. 下流へ移動し，Lowerハンドのマテリアルを置く
 
     置き先に処理済みマテリアルが無ければ入れ替えは行わず，置くだけで作業を終える．
+    処理がもうすぐ終わる層も受け入れ可能の信号を出す（ユーザー確認済み）．この場合は層の前で完了を待って入れ替える．
     """
 
     def can_exchange(self, robot: Robot, hand: str, pos: Position) -> bool:
@@ -38,7 +39,7 @@ class BasicExchange:
         stage = pos.stage
         return (
             pos.material is not None
-            and pos.finished
+            and pos.accepting
             and robot.hands[other].is_empty
             and stage is not None
             and stage.outbound is not None

@@ -20,6 +20,7 @@ STATUS_STEADY = "律速"
 STATUS_TRANSIENT = "過渡"
 STATUS_MISMATCH = "不一致"
 
+ROBOT_LIMIT_MARGIN_S = 1.0  # 入場間隔と W の差がこれ未満なら，ロボットが能力いっぱいで動いている
 TIE_RATIO = 0.95  # 能力の上位2つの比がこれ以上なら拮抗とみなす
 TIE_SLOTS = 2  # 間の保持枠がこれ以下なら，互いに干渉する
 
@@ -108,8 +109,16 @@ def line_limit(parts: dict[str, Value], topology: Topology, motion: Motion) -> L
     return Limit(Value(value, lo, hi, quality), candidates, runner_up, gap, tie)
 
 
+def _robot_at_limit(interval: float | None, capacity: Value) -> bool:
+    """入場間隔が W に届いているか．余裕が打刻の分解能より小さければ届いたとみなす."""
+    if interval is None or capacity.value is None:
+        return True  # 比べられないときは，待ちが無いことだけで判定する
+    return interval - capacity.value < ROBOT_LIMIT_MARGIN_S
+
+
 def observe_bottleneck(
     cycles_by_robot: dict[str, list[CycleWaits]],
+    robot_limited: dict[str, bool],
     topology: Topology,
     motion: Motion,
     alignment: Alignment,
@@ -117,7 +126,7 @@ def observe_bottleneck(
     """保持待ちが過半の枚数で出ている待ち先のうち，最も下流のもの.
 
     律速の手前は順に詰まり，上流のロボットも下流の閉塞で保持待ちになるため．
-    ロボット自身が律速のときは保持待ちが出ないので，待ちがほぼ無いことから判定する．
+    ロボット自身が律速のときは保持待ちが出ないので，待ちがほぼ無く，入場間隔が W に届いていることから判定する．
     """
     shares: dict[str, float] = {}
     candidates: list[tuple[int, str]] = []
@@ -137,7 +146,8 @@ def observe_bottleneck(
                 candidates.append((index, name))
                 held = True
         # 保持待ちも含めて待ちが無ければ，ロボットは動き続けている
-        if not held and statistics.median(c.margin_s + sum(c.hold_s.values()) for c in cycles) < threshold:
+        no_wait = statistics.median(c.margin_s + sum(c.hold_s.values()) for c in cycles) < threshold
+        if not held and no_wait and robot_limited[robot_id]:
             candidates.append((_location(topology, motion, robot_id), robot_id))
     if not candidates:
         return None, shares
@@ -177,7 +187,11 @@ def judge_cassettes(
                 by_part[part][pid] = value
         parts = {part: mix_capacity(values, cassette.process_mix) for part, values in by_part.items()}
         limit = line_limit(parts, topology, motion)
-        observed, shares = observe_bottleneck(cycles[cassette.cassette_id], topology, motion, alignment)
+        robot_limited = {
+            r: _robot_at_limit(intervals.get((cassette.cassette_id, r)), capacity.by_robot[r])
+            for r in topology.robots
+        }
+        observed, shares = observe_bottleneck(cycles[cassette.cassette_id], robot_limited, topology, motion, alignment)
         interval = intervals.get((cassette.cassette_id, limit.candidates[0])) if limit.candidates else None
         carried = previous is not None and previous.observed is not None
         if observed is None:

@@ -5,16 +5,22 @@ END から次の START までのうち，移動を除いた時間がロボット
 - 手空き a：何も持たず，次の動作の対象も無い．余裕
 - 処理待ち b：何も持たず，処理層の完了を待っている．余裕
 - 保持待ち c：マテリアルを持って，待ち先が空くのを待っている．律速の印
+
+処理がもうすぐ終わる層も受け入れ可能の信号を出すので，別の層が空いていても，番号の小さい層の前で完了を待つことがある．
+この待ちは層の不足によるものではなく，少し早くマテリアルが来れば空いている層へ置けるので，b に含める．
 """
 
 from __future__ import annotations
 
-from collections import Counter
+import math
+from bisect import bisect_right
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 
 from .actions import PICK, Action, Alignment
+from .logs import PosKey
 from .motion import Motion
-from .topology import Topology
+from .topology import Stage, Topology
 
 
 @dataclass(slots=True)
@@ -36,6 +42,30 @@ class CycleWaits:
         return self.idle_s + self.process_s
 
 
+class LayerOccupancy:
+    """ログBから求めた，各 Pos にマテリアルがある時間帯."""
+
+    def __init__(self, topology: Topology) -> None:
+        spans: dict[PosKey, list[tuple[int, float]]] = defaultdict(list)
+        for path in topology.visits.values():
+            for visit in path:
+                if visit.pos in topology.stage_of and visit.t_in is not None:
+                    spans[visit.pos].append((visit.t_in, math.inf if visit.t_out is None else visit.t_out))
+        self._starts = {pos: [t for t, _ in sorted(rows)] for pos, rows in spans.items()}
+        self._ends = {pos: [t for _, t in sorted(rows)] for pos, rows in spans.items()}
+
+    def _is_free(self, pos: PosKey, t: float) -> bool:
+        starts = self._starts.get(pos)
+        if not starts:
+            return True
+        i = bisect_right(starts, t) - 1
+        return i < 0 or self._ends[pos][i] <= t
+
+    def has_free_layer(self, stage: Stage, t: float) -> bool:
+        """時刻 t（ログBの時計）に，段の中に空いている層があるか．単層の段は，待ち先そのものなので見ない."""
+        return len(stage.positions) > 1 and any(self._is_free(pos, t) for pos in stage.positions)
+
+
 def _hold_target(holding: dict[str, int], next_action: Action) -> int:
     """保持待ちの待ち先．次の動作が持っているマテリアルの行き先なら，その段.
 
@@ -49,6 +79,7 @@ def _hold_target(holding: dict[str, int], next_action: Action) -> int:
 def collect_waits(alignment: Alignment, motion: Motion, topology: Topology) -> dict[str, list[CycleWaits]]:
     result: dict[str, list[CycleWaits]] = {}
     process_stages = {s.index for s in topology.stages if s.kind == "process"}
+    occupancy = LayerOccupancy(topology)
     for robot_id, actions in alignment.actions.items():
         cycles = motion.cycles.get(robot_id, [])
         if not cycles:
@@ -56,6 +87,7 @@ def collect_waits(alignment: Alignment, motion: Motion, topology: Topology) -> d
             continue
         entry_stage = min(c.upstream for c in cycles)
         threshold = alignment.threshold(robot_id)
+        lag = alignment.lags[robot_id].center_s
         moves = motion.moves[robot_id]
         rows: list[CycleWaits] = []
         idle = process = 0.0
@@ -70,7 +102,11 @@ def collect_waits(alignment: Alignment, motion: Motion, topology: Topology) -> d
                 wait = b.start - a.end - moves.time(a.stage, b.stage)
                 if holding:
                     if wait >= threshold:
-                        hold[_hold_target(holding, b)] += wait
+                        target = _hold_target(holding, b)
+                        if occupancy.has_free_layer(topology.stages[target], b.start - wait - lag):
+                            process += wait
+                        else:
+                            hold[target] += wait
                 elif b.kind == PICK and b.stage in process_stages:
                     process += max(wait, 0.0)
                 else:

@@ -183,12 +183,14 @@ def test_visit_without_out_comes_last_even_on_a_tie():
     assert [v.pos for v in visits] == [("U3", "P1"), ("U2", "P2")]
 
 
-def test_unused_layer_comes_from_log_x_with_a_warning():
+def test_unused_layer_comes_from_log_x():
+    # ログXが真の構成なので，使われなかった層も数える．警告にはしない
     transitions = [row for i in range(1, 8) for row in visit_rows(f"M{i}", i * 100)]
     topology = build_topology(small_logs(transitions))
     process = next(s for s in topology.stages if s.kind == "process")
     assert process.positions == (("U3", "P1"), ("U3", "P2"))
-    assert any("U3-P2" in w for w in topology.warnings)
+    assert topology.unused_layers == [("U3", "P2")]
+    assert not topology.warnings
 
 
 def test_feed_and_outbound_hands_are_found_from_the_route():
@@ -337,7 +339,7 @@ def test_line_limit_is_recovered_from_a_very_low_load_month(very_low_load):
 def test_unused_layers_share_the_stage_capacity(very_low_load):
     _, e = very_low_load
     # 投入間隔が長いと P8, P9 は使われないが，段の能力は3層で求まる
-    assert any("U5-P9" in w for w in e.warnings)
+    assert ("U5", "P9") in e.topology.unused_layers
     assert stage_capacity(e, PROC2, "A").value == pytest.approx(154 / 3, abs=0.3)
     assert e.capacity.by_pos[(("U5", "P9"), "A")].value == pytest.approx(154.0, abs=1.0)
 
@@ -502,6 +504,48 @@ def test_robot_is_the_bottleneck_when_it_never_waits(tmp_path_factory):
     observed = {j.observed for j in e.judgements[1:-1]}
     assert observed == {"R1"}
     assert e.capacity.by_robot["R1"].value == pytest.approx(17.0, abs=0.3)
+
+
+def test_robot_with_margin_left_is_not_the_bottleneck(tmp_path_factory):
+    # 投入間隔 18.37 s は W = 17 s より長い．余裕が小さく待ちは測れないが，律速ではない
+    config = load_config_str(SHORT_PROCESS.replace("interval_s = 15.37", "interval_s = 18.37"))
+    _, e = run_estimate(config, tmp_path_factory)
+    assert {j.observed for j in e.judgements[1:-1]} == {None}
+
+
+def with_accept_lead(config, lead):
+    stages = tuple(
+        dataclasses.replace(s, service=dataclasses.replace(s.service, accept_lead_s=lead)) if s.service.jitter_s > 0
+        else s
+        for s in config.stages
+    )
+    return dataclasses.replace(config, stages=stages)
+
+
+@pytest.mark.parametrize(("pid", "interval"), [("A", 70.37), ("B", 200.37)])
+def test_waiting_at_a_signalled_layer_is_not_a_bottleneck(tmp_path_factory, pid, interval):
+    # もうすぐ終わる層の前で待っても，別の層が空いていれば層の不足ではない
+    config = with_accept_lead(
+        dataclasses.replace(sample_config(interval_s=interval, process_id_weights={pid: 1.0}), duration_s=3 * 86400.0),
+        30.0,
+    )
+    result, e = run_estimate(config, tmp_path_factory)
+    assert any(w["category"] == "hold" for w in result.recorder.robot_waits())
+    assert all(j.observed is None for j in e.judgements[1:-1])
+
+
+def test_accept_signal_does_not_hide_a_real_bottleneck(tmp_path_factory):
+    config = with_accept_lead(
+        dataclasses.replace(sample_config(interval_s=45.37, process_id_weights={"A": 1.0}), duration_s=86400.0), 30.0)
+    _, e = run_estimate(config, tmp_path_factory)
+    observed = [j.observed for j in e.judgements[3:-1]]
+    assert observed.count(PROC2) >= 0.9 * len(observed)
+
+
+def test_accept_signal_does_not_change_the_capacity(tmp_path_factory):
+    _, e = run_estimate(with_accept_lead(config_for(137.37), 30.0), tmp_path_factory)
+    for (part, pid), truth in TRUE_C.items():
+        assert stage_capacity(e, part, pid).value == pytest.approx(truth, abs=0.3)
 
 
 def test_calibration_uses_only_steady_cassettes(tmp_path_factory):

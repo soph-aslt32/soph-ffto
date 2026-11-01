@@ -105,7 +105,7 @@ service = { time_s = 5.0 }    # コンベアの搬送時間
 [[stages]]
 name = "proc1"
 positions = [["U3", "P1"]]
-service = { times_s = { A = 40.0, B = 60.0, C = 80.0 }, jitter_s = 0.5 }
+service = { times_s = { A = 40.0, B = 60.0, C = 80.0 }, jitter_s = 0.5 }  # accept_lead_s：処理が終わるこの時間前から受け入れ可能の信号を出す（既定 0）
 feed = { robot = "R1", hand = "upper" }
 
 [[stages]]
