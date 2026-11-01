@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -33,6 +33,8 @@ class RobotConfig:
     place_s: float
     # (段名, 段名) -> 移動時間．順不同で引く
     move_overrides: dict[frozenset[str], float]
+    home_move_s: float | None = None  # 原点と各段の間の移動時間（既定）．None なら原点へ戻らず，その場で待つ
+    home_overrides: dict[str, float] = field(default_factory=dict)  # 段名 -> 原点との移動時間
     jitter_s: float = 0.0  # 動作時間のばらつき（標準偏差）
     disturbance_ratio: float = 0.0  # 動作が外乱で伸びる割合
     disturbance_s: float = 0.0  # 外乱で伸びる時間
@@ -45,6 +47,15 @@ class RobotConfig:
         if src == dst:
             return 0.0
         return self.move_overrides.get(frozenset((src, dst)), self.move_s)
+
+    @property
+    def has_home(self) -> bool:
+        return self.home_move_s is not None
+
+    def home_time(self, stage: str) -> float:
+        """原点と段 stage の間の移動時間."""
+        assert self.home_move_s is not None
+        return self.home_overrides.get(stage, self.home_move_s)
 
 
 @dataclass(frozen=True)
@@ -226,6 +237,8 @@ def _parse_robot(t: dict[str, Any]) -> RobotConfig:
         pick_s=float(t.get("pick_s", 0.0)),
         place_s=float(t.get("place_s", 0.0)),
         move_overrides=overrides,
+        home_move_s=float(t["home_move_s"]) if "home_move_s" in t else None,
+        home_overrides={str(k): float(v) for k, v in t.get("home_moves", {}).items()},
         jitter_s=float(t.get("jitter_s", 0.0)),
         disturbance_ratio=float(t.get("disturbance_ratio", 0.0)),
         disturbance_s=float(t.get("disturbance_s", 0.0)),
@@ -278,6 +291,10 @@ def _validate(c: SimConfig) -> None:
             if key in hand_keys:
                 raise ConfigError(f"ハンド {key} が複数のロボットに割り当てられています")
             hand_keys.add(key)
+        if r.home_overrides and r.home_move_s is None:
+            raise ConfigError(f"ロボット {r.robot_id} の home_moves には home_move_s も指定してください")
+        if (r.home_move_s is not None and r.home_move_s < 0) or any(v < 0 for v in r.home_overrides.values()):
+            raise ConfigError(f"ロボット {r.robot_id} の原点との移動時間は 0 以上にしてください")
         if r.jitter_s < 0 or r.disturbance_s < 0 or not 0 <= r.disturbance_ratio <= 1:
             raise ConfigError(f"ロボット {r.robot_id} の jitter_s / disturbance_s / disturbance_ratio が不正です")
 

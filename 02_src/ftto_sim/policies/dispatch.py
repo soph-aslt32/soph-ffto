@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
 from ..config import HANDS
-from ..topology import Position, Robot
+from ..topology import HOME, Position, Robot
 
 if TYPE_CHECKING:
     from ..engine import Simulator
@@ -22,12 +22,13 @@ class Task:
     fetch:   段の Pos から処理済みマテリアルを空のハンドで取る
     deliver: ハンドのマテリアルを次段の Pos に置く（入れ替えを含みうる）
     advance: マテリアルを持ったまま，置き先の段の前まで移動する
+    home:    どの動作も要求されていないので，原点へ戻る
     """
 
-    kind: str  # "fetch" | "deliver" | "advance"
+    kind: str  # "fetch" | "deliver" | "advance" | "home"
     hand: str
-    pos: Position
-    source_index: int  # 搬送元の段
+    pos: Position | None  # home は None
+    source_index: int  # 搬送元の段．home は -1
 
 
 class DispatchPolicy(Protocol):
@@ -48,10 +49,11 @@ def candidate_tasks(robot: Robot, sim: Simulator) -> list[Task]:
                 feed = stage.outbound
                 if feed is None or feed.robot is not robot or feed.hand != hand:
                     continue
-                finished = [p for p in stage.positions if p.material is not None and p.finished]
-                if finished:
-                    # 同じ段に処理済みが複数あれば，先に処理が終わったものから取る（仮）
-                    pos = min(finished, key=lambda p: p.finished_at)
+                # 受け入れ可能の信号は取り出し可能の信号でもある．処理の完了前でも，信号を受けて層の前へ向かう
+                ready = [p for p in stage.positions if p.material is not None and p.accepting]
+                if ready:
+                    # 同じ段に複数あれば，先に信号を出したものから取る（仮）
+                    pos = min(ready, key=lambda p: p.accepting_at)
                     tasks.append(Task("fetch", hand, pos, stage.index))
         else:
             target_stage = stages[held.stage_index + 1]
@@ -75,8 +77,16 @@ class UpstreamFirst:
     def select(self, robot: Robot, sim: Simulator) -> Task | None:
         tasks = candidate_tasks(robot, sim)
         if not tasks:
-            return self._advance(robot, sim)
+            return self._advance(robot, sim) or self._go_home(robot)
         return min(tasks, key=lambda t: (t.source_index, HANDS.index(t.hand)))
+
+    def _go_home(self, robot: Robot) -> Task | None:
+        """どの動作も要求されていなければ，原点で待つ（ユーザー確認済み）."""
+        if not robot.config.has_home or robot.location == HOME:
+            return None
+        if any(not robot.hands[hand].is_empty for hand in HANDS):
+            return None
+        return Task("home", HANDS[0], None, -1)
 
     def _advance(self, robot: Robot, sim: Simulator) -> Task | None:
         for hand in HANDS:

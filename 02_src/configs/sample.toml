@@ -81,6 +81,8 @@ lower = ["U2", "P2"]
 move_s = 3.0                  # 段間の移動時間（既定）
 pick_s = 2.0
 place_s = 2.0
+home_move_s = 3.0             # 原点と各段の間の移動時間．どの動作も要求されていないときは原点で待つ
+# home_moves = { proc1 = 2.0 }  # 段ごとの上書き
 # jitter_s = 0.3                # 動作時間のばらつき（標準偏差）（検証用）
 # disturbance_ratio = 0.01      # 動作が外乱で伸びる割合（検証用）
 # disturbance_s = 10.0          # 外乱で伸びる時間（検証用）
@@ -93,6 +95,7 @@ lower = ["U5", "P2"]
 move_s = 3.0
 pick_s = 2.0
 place_s = 2.0
+home_move_s = 3.0
 move_overrides = [{ a = "buffer", b = "unload", s = 5.0 }]
 
 # --- 段（マテリアルの流れ順）．feed は前段からこの段へ運ぶ手段 ---
@@ -105,7 +108,7 @@ service = { time_s = 5.0 }    # コンベアの搬送時間
 [[stages]]
 name = "proc1"
 positions = [["U3", "P1"]]
-service = { times_s = { A = 40.0, B = 60.0, C = 80.0 }, jitter_s = 0.5 }  # accept_lead_s：処理が終わるこの時間前から受け入れ可能の信号を出す（既定 0）
+service = { times_s = { A = 40.0, B = 60.0, C = 80.0 }, jitter_s = 0.5, accept_lead_s = 5.0 }  # accept_lead_s：処理が終わるこの時間前から受け入れ可能（取り出し可能）の信号を出す．実機ではエンジニアが調整する
 feed = { robot = "R1", hand = "upper" }
 
 [[stages]]
@@ -117,7 +120,7 @@ feed = { robot = "R1", hand = "lower" }
 [[stages]]
 name = "proc2"
 positions = [["U5", "P7"], ["U5", "P8"], ["U5", "P9"]]
-service = { times_s = { A = 150.0, B = 200.0, C = 240.0 }, jitter_s = 1.0 }
+service = { times_s = { A = 150.0, B = 200.0, C = 240.0 }, jitter_s = 1.0, accept_lead_s = 5.0 }
 feed = { robot = "R2", hand = "upper" }
 
 [[stages]]

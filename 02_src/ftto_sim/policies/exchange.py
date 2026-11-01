@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Protocol
 
-from ..ops import Move, Op, Pick, Place, PlaceNext
+from ..ops import Move, MoveHome, Op, Pick, Place, PlaceNext
 from ..topology import Position, Robot
 from .dispatch import Task
 
@@ -48,8 +48,10 @@ class BasicExchange:
         )
 
     def expand(self, robot: Robot, task: Task, sim: Simulator) -> list[Op]:
+        if task.kind == "home":
+            return [MoveHome(task.hand)]
         pos = task.pos
-        assert pos.stage is not None
+        assert pos is not None and pos.stage is not None
         if task.kind == "fetch":
             return [Move(pos.stage.index, task.hand), Pick(task.hand, pos)]
         if task.kind == "advance":

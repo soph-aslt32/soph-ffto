@@ -11,6 +11,8 @@ from .config import HANDS, RobotConfig, ServiceConfig, SimConfig
 if TYPE_CHECKING:
     from .ops import Op
 
+HOME = -1  # ロボットの原点を表す location
+
 
 @dataclass(eq=False)
 class Material:
@@ -30,7 +32,9 @@ class Position:
     material: Material | None = None
     finished: bool = False  # 段での処理（コンベアは搬送）が終わっているか
     finished_at: float = 0.0
-    accepting: bool = False  # 次のマテリアルを受け入れられる（処理済み，またはもうすぐ終わる）
+    # 受け入れ可能の信号＝取り出し可能の信号．処理済み，またはもうすぐ終わる
+    accepting: bool = False
+    accepting_at: float = 0.0
 
     @property
     def key(self) -> tuple[str, str]:
@@ -79,6 +83,10 @@ class Robot:
         return "lower" if hand == "upper" else "upper"
 
     def move_time(self, stages: list[Stage], src: int, dst: int) -> float:
+        if src == HOME:
+            return self.config.home_time(stages[dst].name)
+        if dst == HOME:
+            return self.config.home_time(stages[src].name)
         return self.config.move_time(stages[src].name, stages[dst].name)
 
 
@@ -117,8 +125,8 @@ class Topology:
         for prev, nxt in zip(stages, stages[1:]):
             prev.outbound = nxt.feed
 
-        # ロボットの初期位置は，そのロボットが取り出しを担う最も上流の段
+        # ロボットの初期位置は原点．原点が無ければ，そのロボットが取り出しを担う最も上流の段
         for r in robots:
             sources = [s.index for s in stages if s.outbound and s.outbound.robot is r]
-            r.location = min(sources) if sources else 0
+            r.location = HOME if r.config.has_home else (min(sources) if sources else 0)
         return cls(positions=positions, stages=stages, robots=robots)

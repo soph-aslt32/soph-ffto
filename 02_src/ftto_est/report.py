@@ -51,9 +51,10 @@ def service_rows(e: Estimate) -> list[list[Any]]:
     rows = []
     for (index, pid), s in sorted(e.service.by_stage.items()):
         rows.append([KIND_STAGE, e.topology.stages[index].name, pid, *_value_cells(s.value),
-                     s.n_idle, s.n_total, s.adoption])
+                     s.n_idle, s.n_front, s.n_total, s.adoption])
     for (pos, pid), s in sorted(e.service.by_pos.items()):
-        rows.append([KIND_POS, pos_label(pos), pid, *_value_cells(s.value), s.n_idle, s.n_total, s.adoption])
+        rows.append([KIND_POS, pos_label(pos), pid, *_value_cells(s.value), s.n_idle, s.n_front, s.n_total,
+                     s.adoption])
     return rows
 
 
@@ -153,6 +154,9 @@ def summary(e: Estimate) -> dict[str, Any]:
             for s in e.topology.stages
         ],
         "unused_layers": [pos_label(p) for p in e.topology.unused_layers],
+        "service_delay_s": {
+            e.topology.stages[i].name: {"lo": d.lo, "hi": d.hi} for i, d in e.service.delays.items() if d.hi > 0
+        },
         "line_limit_by_process": by_process,
         "line_limit_month": month_limit(e.judgements),
         "cassette_status": dict(counts),
@@ -166,8 +170,8 @@ def write_report(e: Estimate, out_dir: str | Path) -> None:
     _write_csv(out / "capacity.csv", ["part_kind", "part", "process_id", "value_s", "lo_s", "hi_s", "quality"],
                capacity_rows(e))
     _write_csv(out / "service_time.csv",
-               ["part_kind", "part", "process_id", "value_s", "lo_s", "hi_s", "quality", "n_idle", "n_total",
-                "adoption"], service_rows(e))
+               ["part_kind", "part", "process_id", "value_s", "lo_s", "hi_s", "quality", "n_idle", "n_front",
+                "n_total", "adoption"], service_rows(e))
     _write_csv(out / "motion.csv", ["type", "at", "to", "value_s", "lo_s", "hi_s", "quality"], motion_rows(e))
     _write_csv(out / "margin_cassette.csv",
                ["cassette_id", "part_kind", "part", "capacity_s", "capacity_lo_s", "capacity_hi_s", "quality",

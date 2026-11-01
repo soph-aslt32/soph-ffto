@@ -115,3 +115,15 @@ def test_rejects_invalid_row_missing_ratio():
     bad = dataclasses.replace(config, log=dataclasses.replace(config.log, logc_row_missing_ratio=-0.1))
     with pytest.raises(ConfigError):
         _validate(bad)
+
+
+def test_rejects_home_moves_without_a_default():
+    config = load_config(SAMPLE)
+    robots = tuple(dataclasses.replace(r, home_move_s=None, home_overrides={"load": 2.0}) for r in config.robots)
+    with pytest.raises(ConfigError):
+        _validate(dataclasses.replace(config, robots=robots))
+
+
+def test_home_time_can_be_set_per_stage():
+    robot = dataclasses.replace(load_config(SAMPLE).robots[0], home_move_s=3.0, home_overrides={"proc1": 1.5})
+    assert (robot.home_time("proc1"), robot.home_time("load")) == (1.5, 3.0)

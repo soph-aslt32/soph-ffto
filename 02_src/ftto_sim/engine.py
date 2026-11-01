@@ -14,7 +14,7 @@ from .capacity import theoretical_capacity
 from .config import SimConfig
 from .ops import Op
 from .policies import build_policies
-from .topology import Material, Position, Robot, Topology
+from .topology import HOME, Material, Position, Robot, Topology
 from .writers import Recorder
 
 
@@ -165,11 +165,13 @@ class Simulator:
 
     def _on_accept_ready(self, pos: Position) -> None:
         pos.accepting = True
+        pos.accepting_at = self.now
 
     def _on_service_end(self, pos: Position) -> None:
         pos.finished = True
         pos.finished_at = self.now
-        pos.accepting = True
+        if not pos.accepting:
+            self._on_accept_ready(pos)
 
     def _try_auto_transfers(self) -> bool:
         """ロボットを介さない移動（自動搬送と，最終段からの払い出し）."""
@@ -243,7 +245,8 @@ class Simulator:
                 lines.append(f"  {p.label}: {p.material.material_id} ({state})")
         for r in self.topology.robots:
             plan = ", ".join(type(op).__name__ for op in r.plan) or "なし"
-            lines.append(f"  {r.robot_id}: 位置={self.topology.stages[r.location].name}, 残りの動作={plan}")
+            location = "原点" if r.location == HOME else self.topology.stages[r.location].name
+            lines.append(f"  {r.robot_id}: 位置={location}, 残りの動作={plan}")
         return "\n".join(lines)
 
 

@@ -6,7 +6,7 @@ from datetime import datetime
 
 import pytest
 
-from ftto_est import estimate_dir, load_logs
+from ftto_est import Settings, estimate_dir, load_logs, load_settings
 from ftto_est.__main__ import main
 from ftto_est.actions import PICK, PLACE, _common_offset, _is_shifted, align_actions
 from ftto_est.bottleneck import (
@@ -31,6 +31,7 @@ from ftto_est.stats import center, low_center, lowest_common, mean_interval
 from ftto_est.topology import build_topology, build_visits
 from ftto_est.waits import _hold_target
 from ftto_sim import load_config_str, simulate
+from tools.verify_estimate import settings_of
 
 from .helpers import sample_config, with_log
 
@@ -44,10 +45,11 @@ TRUE_C = {
 
 
 def run_estimate(config, tmp_path_factory):
+    """実機でエンジニアが調整している設定値を与えて推定する."""
     result = simulate(config)
     log_dir = tmp_path_factory.mktemp("logs")
     result.write(log_dir)
-    return result, estimate_dir(log_dir)
+    return result, estimate_dir(log_dir, settings_of(config))
 
 
 def config_for(interval, days=3, **input_overrides):
@@ -362,7 +364,7 @@ def test_conveyors_are_upper_bounds(low_load):
 
 def test_service_without_idle_samples_is_only_an_interval(tmp_path_factory):
     # 処理の完了がいつも次のマテリアルを取りに行く途中に重なる
-    _, e = run_estimate(config_for(86.37), tmp_path_factory)
+    _, e = run_estimate(with_home(config_for(86.37), None, 0.0), tmp_path_factory)
     value = stage_capacity(e, PROC1, "C")
     assert value.quality == INTERVAL_ONLY
     assert value.lo <= 84.0 <= value.hi
@@ -397,7 +399,7 @@ def test_robot_margin_is_idle_plus_process_wait(low_load):
 
 
 def test_margin_uses_the_upper_bound_of_an_interval(tmp_path_factory):
-    _, e = run_estimate(config_for(86.37), tmp_path_factory)
+    _, e = run_estimate(with_home(config_for(86.37), None, 0.0), tmp_path_factory)
     pid_of = {c.cassette_id: c.process_id for c in e.cassettes}
     row = next(m for m in e.margins[100:] if m.kind == "stage" and m.part == PROC1 and pid_of[m.cassette_id] == "C")
     assert row.margin_s == pytest.approx(row.interval_s - row.capacity.hi)
@@ -429,7 +431,9 @@ def test_judgement_switches_at_the_true_limit(tmp_path_factory, pid, below, abov
 
     limited = observed(below)
     assert limited.count(part) >= 0.9 * len(limited)
-    assert all(o is None for o in observed(above))
+    # 限界のごく近くでは，信号で先に動いたロボットの都合で一時的に保持待ちが出ることがある
+    free = observed(above)
+    assert free.count(None) >= 0.9 * len(free)
 
 
 def test_carried_over_congestion_is_transient(tmp_path_factory):
@@ -522,8 +526,8 @@ def test_robot_with_margin_left_is_not_the_bottleneck(tmp_path_factory):
 def test_one_of_two_robots_is_the_bottleneck(tmp_path_factory, robot, interval, expected):
     config = sample_config(interval_s=interval, process_id_weights={"A": 1.0})
     stages = tuple(
-        dataclasses.replace(s, service=dataclasses.replace(s.service, times_s={"A": 5.0})) if s.service.jitter_s > 0
-        else s
+        dataclasses.replace(s, service=dataclasses.replace(s.service, times_s={"A": 5.0}, accept_lead_s=0.0))
+        if s.service.jitter_s > 0 else s
         for s in config.stages
     )
     robots = tuple(dataclasses.replace(r, pick_s=3.0) if r.robot_id == robot else r for r in config.robots)
@@ -542,15 +546,15 @@ def with_accept_lead(config, lead):
     return dataclasses.replace(config, stages=stages)
 
 
-@pytest.mark.parametrize(("pid", "interval"), [("A", 70.37), ("B", 200.37)])
-def test_waiting_at_a_signalled_layer_is_not_a_bottleneck(tmp_path_factory, pid, interval):
+@pytest.mark.parametrize(("pid", "interval", "held"), [("A", 70.37, False), ("B", 200.37, True)])
+def test_waiting_at_a_signalled_layer_is_not_a_bottleneck(tmp_path_factory, pid, interval, held):
     # もうすぐ終わる層の前で待っても，別の層が空いていれば層の不足ではない
     config = with_accept_lead(
         dataclasses.replace(sample_config(interval_s=interval, process_id_weights={pid: 1.0}), duration_s=3 * 86400.0),
         30.0,
     )
     result, e = run_estimate(config, tmp_path_factory)
-    assert any(w["category"] == "hold" for w in result.recorder.robot_waits())
+    assert any(w["category"] == "hold" for w in result.recorder.robot_waits()) == held
     assert all(j.observed is None for j in e.judgements[1:-1])
 
 
@@ -566,6 +570,69 @@ def test_accept_signal_does_not_change_the_capacity(tmp_path_factory):
     _, e = run_estimate(with_accept_lead(config_for(137.37), 30.0), tmp_path_factory)
     for (part, pid), truth in TRUE_C.items():
         assert stage_capacity(e, part, pid).value == pytest.approx(truth, abs=0.3)
+
+
+def with_home(config, home, lead):
+    robots = tuple(dataclasses.replace(r, home_move_s=home) for r in config.robots)
+    return with_accept_lead(dataclasses.replace(config, robots=robots), lead)
+
+
+def test_settings_file(tmp_path):
+    path = tmp_path / "settings.toml"
+    path.write_text('[accept_lead_s]\n"*" = 5.0\n"U5-P7" = 8.0\n[home_move_s]\n"U3-P1" = 2.0\n', encoding="utf-8")
+    settings = load_settings(path)
+    assert (settings.lead("U5-P7"), settings.lead("U3-P1")) == (8.0, 5.0)
+    assert (settings.home("U3-P1"), settings.home("U5-P7")) == (2.0, None)
+
+
+def test_late_signal_adds_a_delay_that_the_settings_remove(tmp_path_factory):
+    # 原点から 3 s，信号は処理の完了と同時．着くのが 3 s 遅れる
+    config = with_home(config_for(137.37), 3.0, 0.0)
+    _, e = run_estimate(config, tmp_path_factory)
+    assert stage_capacity(e, PROC1, "A").value == pytest.approx(44.0, abs=0.3)
+    assert stage_capacity(e, PROC1, "A").quality == ESTIMATED
+
+
+def test_without_settings_the_delay_makes_an_upper_bound(tmp_path_factory):
+    config = with_home(config_for(137.37), 3.0, 0.0)
+    log_dir = tmp_path_factory.mktemp("logs")
+    simulate(config).write(log_dir)
+    value = stage_capacity(estimate_dir(log_dir), PROC1, "A")
+    assert value.quality == UPPER_ONLY
+    assert value.value == pytest.approx(47.0, abs=0.3)
+    assert value.lo <= 44.0 <= value.hi
+
+
+def test_long_signal_needs_no_home_time(tmp_path_factory):
+    # 信号がどの移動よりも長ければ，ロボットは必ず先に着くので，原点からの移動時間が分からなくても正確に求まる
+    config = with_home(config_for(137.37), 3.0, 10.0)
+    log_dir = tmp_path_factory.mktemp("logs")
+    simulate(config).write(log_dir)
+    value = stage_capacity(estimate_dir(log_dir, Settings({"*": 10.0}, {})), PROC1, "A")
+    assert value.quality == ESTIMATED
+    assert value.value == pytest.approx(44.0, abs=0.3)
+
+
+def test_delay_is_measured_when_the_log_has_high_load(tmp_path_factory):
+    # 高負荷のカセットでは層の前で完了を待つので，取り始めた時刻が処理の完了そのものになる．設定が無くても遅れが分かる
+    config = with_home(
+        sample_config(interval_s=120.37, interval_schedule=((100, 120.37), (100, 45.37)), process_id_weights=MIX),
+        3.0, 0.0,
+    )
+    log_dir = tmp_path_factory.mktemp("logs")
+    simulate(dataclasses.replace(config, duration_s=10 * 86400.0)).write(log_dir)
+    e = estimate_dir(log_dir)
+    assert e.service.delays[1].lo == pytest.approx(3.0, abs=0.3)
+    for (part, pid), truth in TRUE_C.items():
+        assert stage_capacity(e, part, pid).value == pytest.approx(truth, abs=0.3)
+
+
+def test_home_trips_count_as_robot_margin(tmp_path_factory):
+    # 原点への往復は，要求が来れば省ける時間なので余裕に含まれる．入場間隔 − W に一致する
+    _, e = run_estimate(config_for(137.37), tmp_path_factory)
+    rows = [m for m in e.margins if m.kind == "robot" and m.part == "R1" and m.margin_s is not None]
+    for m in rows[1:-1]:
+        assert m.margin_s == pytest.approx(m.interval_s - 19.0, abs=2.0)
 
 
 def test_calibration_uses_only_steady_cassettes(tmp_path_factory):
@@ -592,6 +659,12 @@ def test_line_limit_lists_every_candidate_of_an_interval():
     assert limit.candidates == ["a", "b"]
     assert (limit.value.lo, limit.value.hi) == (81.0, 86.0)
     assert limit.value.quality == INTERVAL_ONLY
+
+
+def test_line_limit_uses_the_upper_bound_when_the_bottleneck_is_open():
+    parts = {"a": Value(80.0, 70.0, 85.0, BIASED), "b": Value.of(82.0)}
+    limit = line_limit(parts, _fake_topology(), _fake_motion())
+    assert limit.value.value == 85.0
 
 
 def _fake_topology():

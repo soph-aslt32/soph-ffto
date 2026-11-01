@@ -287,7 +287,9 @@ def test_wait_at_source_policy_moves_after_layer_is_ready():
     ("A", "upstream_first_wait_at_source"), ("C", "upstream_first_wait_at_source"),
 ])
 def test_capacity_matches_saturated_run(pid, dispatch):
-    config = with_policies(sample_config(interval_s=1.0, process_id_weights={pid: 1.0}), dispatch=dispatch)
+    # 上流で待つ動作は比較用で，信号を受けて先に動く実機の動作を含まない
+    config = with_accept_lead(sample_config(interval_s=1.0, process_id_weights={pid: 1.0}), 0.0)
+    config = with_policies(config, dispatch=dispatch)
     config = dataclasses.replace(config, duration_s=24 * 3600)
     capacity = run(config).capacity
     assert _saturated_interval(config) == pytest.approx(capacity["line"][pid]["T_min_s"], abs=0.2)
@@ -455,7 +457,38 @@ def test_exchange_waits_for_the_layer_to_finish():
         assert op["t_start"] >= done[(op["material_id"], unit, pos)] - 1e-9
 
 
-def test_default_accept_signal_keeps_the_previous_behavior():
-    a = run(sample_config())
-    b = run(with_accept_lead(sample_config(), 0.0))
-    assert a.recorder.robot_ops == b.recorder.robot_ops
+def test_idle_robot_goes_home_and_waits_there():
+    result = run(sample_config(interval_s=200.0, process_id_weights={"A": 1.0}))
+    ops = [op for op in result.recorder.robot_ops if op["robot_id"] == "R1"]
+    assert any(op["action"] == "MOVE" and op["target"] == "home" for op in ops)
+    # 移動を除いた動作は，原点へ戻っても変わらない
+    assert [op["action"] for op in ops if op["action"] != "MOVE"][:4] == ["PICK", "PLACE", "PICK", "PLACE"]
+
+
+def test_robot_without_home_stays_where_it_is():
+    config = sample_config()
+    robots = tuple(dataclasses.replace(r, home_move_s=None) for r in config.robots)
+    result = run(dataclasses.replace(config, robots=robots))
+    assert not any(op["target"] == "home" for op in result.recorder.robot_ops)
+
+
+def test_signal_calls_an_empty_robot_to_the_layer_before_the_process_ends():
+    config = with_accept_lead(sample_config(interval_s=200.0, process_id_weights={"A": 1.0}), 10.0)
+    result = run(without_jitter(config))
+    ops = [op for op in result.recorder.robot_ops if op["robot_id"] == "R1"]
+    pick = next(i for i, op in enumerate(ops) if op["action"] == "PICK" and op["target"] == "U3-P1")
+    done = next(r["t_service_end"] for r in result.recorder.occupancy
+                if r["material_id"] == ops[pick]["material_id"] and r["unit_id"] == "U3")
+    assert ops[pick - 1]["action"] == "MOVE"
+    assert ops[pick - 1]["t_start"] == pytest.approx(done - 10.0)  # 信号で動き出す
+    assert ops[pick]["t_start"] == pytest.approx(done)  # 先に着いて，完了を待って取る
+
+
+def test_late_signal_delays_the_pick():
+    config = with_accept_lead(sample_config(interval_s=200.0, process_id_weights={"A": 1.0}), 1.0)
+    result = run(without_jitter(config))
+    ops = [op for op in result.recorder.robot_ops if op["robot_id"] == "R1"]
+    pick = next(op for op in ops if op["action"] == "PICK" and op["target"] == "U3-P1")
+    done = next(r["t_service_end"] for r in result.recorder.occupancy
+                if r["material_id"] == pick["material_id"] and r["unit_id"] == "U3")
+    assert pick["t_start"] == pytest.approx(done + 2.0)  # 原点から 3 s，信号は 1 s 前

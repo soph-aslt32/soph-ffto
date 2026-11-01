@@ -21,8 +21,21 @@ uv run python -m ftto_sim --config configs/sample.toml --out <出力先ディレ
 ### 実行
 
 ```powershell
-uv run python -m ftto_est --logs <ログのディレクトリ> --out <出力先ディレクトリ>
+uv run python -m ftto_est --logs <ログのディレクトリ> --out <出力先ディレクトリ> --settings <設定ファイル>
 ```
+
+`--settings` は省略できる．受け入れ可能の信号の時間と，ロボットの原点から各 Pos までの移動時間を TOML で与える．キーは Pos の名前で，`"*"` は既定値．
+
+```toml
+[accept_lead_s]   # 処理が終わる何秒前に信号を出すか
+"*" = 5.0
+"U5-P7" = 8.0
+
+[home_move_s]     # 原点から Pos の前までの移動時間
+"*" = 3.0
+```
+
+設定が無く，ログから遅れも測れないときは，処理時間に「上界のみ」の印が付く．
 
 | 出力 | 内容 |
 |---|---|

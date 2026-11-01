@@ -95,6 +95,8 @@ def line_limit(parts: dict[str, Value], topology: Topology, motion: Motion) -> L
     candidates = [k for k in ranked if (known[k].hi if known[k].hi is not None else known[k].value) >= lo - 1e-9]
     candidates = candidates or ranked[:1]
     quality = INTERVAL_ONLY if len(candidates) > 1 else known[candidates[0]].quality
+    if len(candidates) > 1:
+        value = hi  # 律速部位が確定しないときは，保守側の上界を出す
     if len(known) < len(parts):
         quality = LOWER_ONLY  # 未観測の部位の方が遅いかもしれない
     runner_up = ranked[1] if len(ranked) > 1 else None

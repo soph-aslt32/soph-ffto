@@ -11,6 +11,7 @@ from .logs import Logs, load_logs
 from .margin import Cassette, PartMargin, build_cassettes, build_margins
 from .motion import BasicExchangeCycle, CycleRule, Motion, measure_motion
 from .service import ServiceTimes, estimate_service
+from .settings import Settings
 from .topology import Topology, build_topology
 from .trend import TrendPoint, build_trend
 from .waits import CycleWaits, collect_waits
@@ -32,12 +33,12 @@ class Estimate:
     warnings: list[str]
 
 
-def estimate(logs: Logs, rule: CycleRule | None = None) -> Estimate:
+def estimate(logs: Logs, rule: CycleRule | None = None, settings: Settings | None = None) -> Estimate:
     topology = build_topology(logs)
     alignment = align_actions(logs, topology)
     motion = measure_motion(alignment, topology, rule or BasicExchangeCycle())
     pid_of = {row.material_id: row.process_id for row in logs.intakes}
-    service = estimate_service(alignment, motion, topology, pid_of)
+    service = estimate_service(alignment, motion, topology, pid_of, settings or Settings())
     process_ids = sorted(set(pid_of.values()))
     capacity = build_capacity(topology, motion, service, process_ids)
     cassettes = build_cassettes(logs)
@@ -51,5 +52,5 @@ def estimate(logs: Logs, rule: CycleRule | None = None) -> Estimate:
                     calibrations, trend, warnings)
 
 
-def estimate_dir(log_dir) -> Estimate:
-    return estimate(load_logs(log_dir))
+def estimate_dir(log_dir, settings: Settings | None = None) -> Estimate:
+    return estimate(load_logs(log_dir), settings=settings)

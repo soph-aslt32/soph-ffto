@@ -5,5 +5,6 @@
 
 from .logs import Logs, load_logs
 from .pipeline import Estimate, estimate, estimate_dir
+from .settings import Settings, load_settings
 
-__all__ = ["Estimate", "Logs", "estimate", "estimate_dir", "load_logs"]
+__all__ = ["Estimate", "Logs", "Settings", "estimate", "estimate_dir", "load_logs", "load_settings"]

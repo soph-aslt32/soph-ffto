@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from .topology import HOME
+
 if TYPE_CHECKING:
     from .engine import Simulator
     from .topology import Position, Robot
@@ -61,6 +63,29 @@ class Move(Op):
 
     def target_label(self, sim: Simulator) -> str:
         return sim.topology.stages[self.stage_index].name
+
+
+@dataclass(eq=False)
+class MoveHome(Op):
+    """どの動作も要求されていないときに，原点へ戻る."""
+
+    hand: str
+    action = "MOVE"
+
+    def is_noop(self, robot: Robot) -> bool:
+        return robot.location == HOME
+
+    def ready(self, sim: Simulator, robot: Robot) -> bool:
+        return True
+
+    def start(self, sim: Simulator, robot: Robot) -> float:
+        return sim.robot_op_time(robot, robot.move_time(sim.topology.stages, robot.location, HOME))
+
+    def complete(self, sim: Simulator, robot: Robot) -> None:
+        robot.location = HOME
+
+    def target_label(self, sim: Simulator) -> str:
+        return "home"
 
 
 @dataclass(eq=False)

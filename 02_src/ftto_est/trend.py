@@ -67,7 +67,7 @@ def build_trend(
             warnings.extend(notes)
     for (stage_index, pid), samples in sorted(service.samples.items()):
         if not samples.idle:
-            continue
+            continue  # 層の前で待っていたサンプルは負荷が高いときに偏って現れるので，時系列には使わない
         pairs = list(zip(samples.idle_times, samples.idle))
         name = topology.stages[stage_index].name
         found, notes = _points(MEASURE_SERVICE, name, pid, pairs, default_width)

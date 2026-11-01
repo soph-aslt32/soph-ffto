@@ -23,7 +23,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from ftto_est import Estimate, estimate_dir  # noqa: E402
+from ftto_est import Estimate, Settings, estimate_dir  # noqa: E402
 from ftto_est.quality import ESTIMATED  # noqa: E402
 from ftto_sim import SimConfig, SimResult, load_config, load_config_str, simulate  # noqa: E402
 
@@ -41,6 +41,24 @@ class Scenario:
     name: str
     build: Callable[[SimConfig], SimConfig]
     config_text: str | None = None  # サンプル設定の代わりに使う構成
+    use_settings: bool = True  # 信号の時間と原点からの移動時間を，推定処理に与えるか
+
+
+def settings_of(config: SimConfig) -> Settings:
+    """実機でエンジニアが調整している設定値を，推定処理に渡す形にする."""
+    leads: dict[str, float] = {}
+    homes: dict[str, float] = {}
+    robots = {r.robot_id: r for r in config.robots}
+    for i, stage in enumerate(config.stages[:-1]):
+        outbound = config.stages[i + 1].feed
+        for unit, pos in stage.positions:
+            label = f"{unit}-{pos}"
+            leads[label] = stage.service.accept_lead_s
+            if outbound is None or outbound.kind != "robot":
+                continue
+            robot = robots[outbound.robot_id]
+            homes[label] = robot.home_time(stage.name) if robot.has_home else 0.0
+    return Settings(leads, homes)
 
 
 def _input(**kw: Any) -> Callable[[SimConfig], SimConfig]:
@@ -63,15 +81,16 @@ def _robots(interval: float, **kw: Any) -> Callable[[SimConfig], SimConfig]:
     return build
 
 
-def _accept(interval: float, lead: float) -> Callable[[SimConfig], SimConfig]:
+def _accept(interval: float, lead: float, home: float | None = None, **input_kw: Any) -> Callable[[SimConfig], SimConfig]:
     def build(c: SimConfig) -> SimConfig:
-        c = _input(interval_s=interval)(c)
+        c = _input(interval_s=interval, **input_kw)(c)
         stages = tuple(
             dataclasses.replace(s, service=dataclasses.replace(s.service, accept_lead_s=lead))
             if s.service.jitter_s > 0 else s
             for s in c.stages
         )
-        return dataclasses.replace(c, stages=stages)
+        robots = tuple(dataclasses.replace(r, home_move_s=home) for r in c.robots)
+        return dataclasses.replace(c, stages=stages, robots=robots)
     return build
 
 
@@ -80,7 +99,7 @@ def _slow_robot(robot_id: str, interval: float) -> Callable[[SimConfig], SimConf
     def build(c: SimConfig) -> SimConfig:
         c = _input(interval_s=interval, process_id_weights={"A": 1.0})(c)
         stages = tuple(
-            dataclasses.replace(s, service=dataclasses.replace(s.service, times_s={"A": 5.0}))
+            dataclasses.replace(s, service=dataclasses.replace(s.service, times_s={"A": 5.0}, accept_lead_s=0.0))
             if s.service.jitter_s > 0 else s
             for s in c.stages
         )
@@ -274,6 +293,22 @@ def scenarios() -> list[Scenario]:
         for lead in (5.0, 15.0, 30.0) for t in (60.37, 70.37, 86.37, 137.37, 200.37)
     ]
     rows += [
+        Scenario("home", f"原点{home:.0f}s 信号{lead:.0f}s前 間隔{t}", _accept(t, lead, home))
+        for home, lead in ((3.0, 0.0), (3.0, 2.0), (3.0, 5.0), (5.0, 2.0), (5.0, 20.0))
+        for t in (60.37, 86.37, 137.37, 600.37)
+    ]
+    rows += [
+        Scenario("nosetting", f"設定なし 原点{home:.0f}s 信号{lead:.0f}s前 間隔{t}", _accept(t, lead, home),
+                 use_settings=False)
+        for home, lead in ((3.0, 0.0), (3.0, 5.0)) for t in (86.37, 137.37)
+    ]
+    rows += [
+        Scenario("nosetting", "設定なし 原点3s 信号0s前 高負荷を含む",
+                 _accept(120.37, 0.0, 3.0, interval_schedule=((100, 120.37), (100, 45.37))), use_settings=False),
+        Scenario("nosetting", "設定なし 原点5s 信号2s前 高負荷を含む",
+                 _accept(120.37, 2.0, 5.0, interval_schedule=((100, 120.37), (100, 45.37))), use_settings=False),
+    ]
+    rows += [
         Scenario("layout", f"{robot}が遅い 間隔{t}", _slow_robot(robot, t))
         for robot in ("R1", "R2") for t in (15.37, 30.37)
     ]
@@ -345,30 +380,36 @@ def _voluntary_hold(result: SimResult, config: SimConfig):
 
 
 def _true_robot_margins(result: SimResult, config: SimConfig) -> dict[tuple[str, str], float]:
-    """(カセット, ロボット) ごとの 手空き＋処理待ち（1枚あたりの中央値）."""
+    """(カセット, ロボット) ごとの 1枚あたりの空いている時間の中央値.
+
+    周期 − W − 層の不足による保持待ち．原点への往復は，要求が来れば省ける時間なので余裕に含まれる．
+    """
     cassette_of = {row[1]: row[3] for _, row in result.recorder.log_a}
     voluntary = _voluntary_hold(result, config)
-    waits: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    holds: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for w in result.recorder.robot_waits():
-        waits[w["robot_id"]].append(w)
+        if w["category"] == "hold" and not voluntary(w):
+            holds[w["robot_id"]].append(w)
     entry_stage = {}
     for i, stage in enumerate(config.stages):
         if stage.feed is not None and stage.feed.kind == "robot":
             entry_stage.setdefault(stage.feed.robot_id, config.stages[i - 1])
     groups: dict[tuple[str, str], list[float]] = defaultdict(list)
     for robot_id, stage in entry_stage.items():
+        cycle = result.capacity["robots"][robot_id]["W_s"]
+        if cycle is None:
+            continue
         labels = {f"{u}-{p}" for u, p in stage.positions}
         entries = [op for op in result.recorder.robot_ops
                    if op["robot_id"] == robot_id and op["action"] == "PICK" and op["target"] in labels]
-        rows = sorted(waits[robot_id], key=lambda w: w["t_start"])
+        rows = sorted(holds[robot_id], key=lambda w: w["t_start"])
         i = 0
-        for op in entries:
-            total = 0.0
+        for prev, op in zip(entries, entries[1:]):
+            held = 0.0
             while i < len(rows) and rows[i]["t_start"] < op["t_start"]:
-                if rows[i]["category"] != "hold" or voluntary(rows[i]):
-                    total += min(rows[i]["t_end"], op["t_start"]) - rows[i]["t_start"]
+                held += rows[i]["t_end"] - rows[i]["t_start"]
                 i += 1
-            groups[(cassette_of[op["material_id"]], robot_id)].append(total)
+            groups[(cassette_of[op["material_id"]], robot_id)].append(op["t_start"] - prev["t_start"] - cycle - held)
     return {k: statistics.median(v) for k, v in groups.items()}
 
 
@@ -555,7 +596,7 @@ def verify_limits() -> None:
         result = simulate(config)
         with tempfile.TemporaryDirectory() as d:
             result.write(d)
-            e = estimate_dir(d)
+            e = estimate_dir(d, settings_of(config))
         for pid, limit in limit_by_process(e.topology, e.motion, e.capacity).items():
             true = saturated_limit(config, pid)
             value = limit.value.value
@@ -568,7 +609,7 @@ def run(scenario: Scenario, days: float) -> tuple[Scenario, dict[str, Any], list
     result = simulate(config)
     with tempfile.TemporaryDirectory() as d:
         result.write(d)
-        e = estimate_dir(d)
+        e = estimate_dir(d, settings_of(config) if scenario.use_settings else None)
     return scenario, compare(result, config, e), e.warnings[:3]
 
 
@@ -584,7 +625,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="合成データで推定処理を検証する")
     parser.add_argument("--days", type=float, default=30.0)
     parser.add_argument("--limits", action="store_true", help="飽和実行の真の限界と照合する")
-    parser.add_argument("--only", help="条件のグループ（interval, judge, mode, gap, lag, robot, rows, load, accept, layout）")
+    parser.add_argument("--only", help="条件のグループ（interval, judge, mode, gap, lag, robot, rows, load, accept, home, nosetting, layout）")
     args = parser.parse_args()
 
     if args.limits:
