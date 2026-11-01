@@ -222,7 +222,12 @@ class Simulator:
             return changed
         op = robot.plan[0]
         if not op.ready(self, robot):
-            return changed  # 条件が整うまでその場で待つ
+            task = self.dispatch.preempt(robot, self, op.hand)
+            if task is None:
+                return changed  # 条件が整うまでその場で待つ
+            robot.plan.clear()
+            robot.plan.extend(self.exchange.expand(robot, task, self))
+            return True
         robot.plan.popleft()
         robot.busy = True
         t_start = self.now

@@ -10,6 +10,8 @@ from typing import Any
 
 LOWER = "lower"  # 処理済みのマテリアルを下流へ運ぶハンド
 HANDS = ("upper", LOWER)
+# 作業の種類．[policies.priority] の order の既定値でもある（左ほど優先）
+TASK_ORDER = ("deliver_lower", "deliver_upper", "fetch_upper", "fetch_lower")
 DEFAULT_PROCESS_KEY = "*"
 
 
@@ -119,6 +121,10 @@ class PolicyConfig:
     dispatch: str
     exchange: str
     layer_select: str
+    task_order: tuple[str, ...] = TASK_ORDER  # 実行できる作業の優先順位（左ほど優先）
+    commit_on_signal: bool = True  # 信号を受けて取り出しに向かったら，取り出すまで他の作業をしない
+    commit_delivery: bool = True  # Lower が持っている間は，下流へ置くまで他の作業をしない
+    advance_to_target: bool = True  # 置き先が空いていなければ，持ったまま置き先の前まで移動して待つ
 
 
 @dataclass(frozen=True)
@@ -203,10 +209,18 @@ def _parse_log(t: dict[str, Any]) -> LogConfig:
 
 
 def _parse_policies(t: dict[str, Any]) -> PolicyConfig:
+    priority = t.get("priority", {})
+    unknown = set(priority) - {"order", "commit_on_signal", "commit_delivery", "advance_to_target"}
+    if unknown:
+        raise ConfigError(f"policies.priority に未定義の項目があります: {sorted(unknown)}")
     return PolicyConfig(
-        dispatch=str(t.get("dispatch", "upstream_first")),
+        dispatch=str(t.get("dispatch", "priority")),
         exchange=str(t.get("exchange", "basic")),
         layer_select=str(t.get("layer_select", "lowest_index")),
+        task_order=tuple(str(k) for k in priority.get("order", TASK_ORDER)),
+        commit_on_signal=bool(priority.get("commit_on_signal", True)),
+        commit_delivery=bool(priority.get("commit_delivery", True)),
+        advance_to_target=bool(priority.get("advance_to_target", True)),
     )
 
 
@@ -332,6 +346,9 @@ def _validate(c: SimConfig) -> None:
         for pid in c.input.process_id_weights:
             if pid not in s.service.times_s and DEFAULT_PROCESS_KEY not in s.service.times_s:
                 raise ConfigError(f"段 {s.name} に処理ID {pid} の処理時間がありません")
+
+    if sorted(c.policies.task_order) != sorted(TASK_ORDER):
+        raise ConfigError(f"policies.priority.order には {list(TASK_ORDER)} を1回ずつ指定してください")
 
     inp = c.input
     if inp.interval_s <= 0 or inp.cassette_size <= 0:

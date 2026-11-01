@@ -3,7 +3,8 @@ from collections import defaultdict
 
 import pytest
 
-from ftto_sim import DeadlockError, load_config_str
+from ftto_sim import DeadlockError, Simulator, load_config_str
+from ftto_sim.topology import Material
 
 from .helpers import (
     layers_in_order,
@@ -275,21 +276,18 @@ def test_robot_moves_to_the_layer_with_next_material_and_waits_there(pre_moving)
 
 def test_wait_at_source_policy_moves_after_layer_is_ready():
     config = with_policies(sample_config(interval_s=45.0, process_id_weights={"C": 1.0}),
-                           dispatch="upstream_first_wait_at_source")
+                           advance_to_target=False)
     ops = [op for op in run(config).recorder.robot_ops if op["robot_id"] == "R1"]
     gaps = [b["t_start"] - a["t_end"] for a, b in zip(ops, ops[1:])
             if (a["hand"], a["action"], b["action"]) == ("upper", "PICK", "MOVE") and b["target"] == "proc1"]
     assert max(gaps) > 10
 
 
-@pytest.mark.parametrize(("pid", "dispatch"), [
-    ("A", "upstream_first"), ("B", "upstream_first"), ("C", "upstream_first"),
-    ("A", "upstream_first_wait_at_source"), ("C", "upstream_first_wait_at_source"),
-])
-def test_capacity_matches_saturated_run(pid, dispatch):
+@pytest.mark.parametrize(("pid", "advance"), [("A", True), ("B", True), ("C", True), ("A", False), ("C", False)])
+def test_capacity_matches_saturated_run(pid, advance):
     # 上流で待つ動作は比較用で，信号を受けて先に動く実機の動作を含まない
     config = with_accept_lead(sample_config(interval_s=1.0, process_id_weights={pid: 1.0}), 0.0)
-    config = with_policies(config, dispatch=dispatch)
+    config = with_policies(config, advance_to_target=advance)
     config = dataclasses.replace(config, duration_s=24 * 3600)
     capacity = run(config).capacity
     assert _saturated_interval(config) == pytest.approx(capacity["line"][pid]["T_min_s"], abs=0.2)
@@ -513,3 +511,76 @@ def test_lower_waits_in_front_of_a_blocked_downstream():
     for prev, nxt in zip(ops, ops[1:]):
         if prev["hand"] == "lower" and prev["action"] == "PICK":
             assert nxt["action"] != "MOVE" or nxt["target"] != "load"
+
+
+# --- 動作の優先度の設定 ---
+
+
+def scene(**policy_overrides):
+    """R1 が空のハンドで，上流にマテリアルが届き，proc1 が信号を出している状態を作る."""
+    sim = Simulator(with_policies(sample_config(), **policy_overrides))
+    robot = sim.topology.robots[0]
+    stages = sim.topology.stages
+    for stage, material_id in ((stages[0], "M1"), (stages[1], "M2")):
+        pos = stage.positions[0]
+        pos.material = Material(material_id, "A", "C1", stage.index, pos)
+        pos.finished = pos.accepting = True
+    return sim, robot, stages
+
+
+def test_default_order_takes_the_upstream_material_first():
+    sim, robot, _ = scene()
+    task = sim.dispatch.select(robot, sim)
+    assert (task.kind, task.hand) == ("fetch", "upper")
+
+
+def test_order_can_take_the_processed_material_first():
+    order = ("deliver_lower", "deliver_upper", "fetch_lower", "fetch_upper")
+    sim, robot, _ = scene(task_order=order)
+    task = sim.dispatch.select(robot, sim)
+    assert (task.kind, task.hand) == ("fetch", "lower")
+
+
+def hold_in_lower(sim, robot, stages):
+    """Lower が処理済みを持ち，下流の buffer が埋まっている状態にする."""
+    material = stages[1].positions[0].material
+    stages[1].positions[0].material = None
+    robot.hands["lower"].material = material
+    stages[2].positions[0].material = Material("M3", "A", "C1", 2, stages[2].positions[0])
+
+
+def test_lower_holding_a_material_commits_to_downstream():
+    sim, robot, stages = scene()
+    hold_in_lower(sim, robot, stages)
+    task = sim.dispatch.select(robot, sim)
+    assert (task.kind, task.hand) == ("advance", "lower")
+
+
+def test_delivery_can_be_released_from_the_commitment():
+    sim, robot, stages = scene(commit_delivery=False)
+    hold_in_lower(sim, robot, stages)
+    task = sim.dispatch.select(robot, sim)
+    assert (task.kind, task.hand) == ("fetch", "upper")
+
+
+def test_signal_commits_the_robot_to_the_take_out():
+    sim, robot, _ = scene()
+    assert sim.dispatch.preempt(robot, sim, "lower") is None
+
+
+def test_take_out_can_be_released_from_the_commitment():
+    sim, robot, _ = scene(commit_on_signal=False)
+    task = sim.dispatch.preempt(robot, sim, "lower")
+    assert (task.kind, task.hand) == ("fetch", "upper")
+
+
+def test_robot_leaves_the_layer_when_the_take_out_is_not_committed():
+    config = with_accept_lead(sample_config(interval_s=86.37, process_id_weights={"C": 1.0}), 20.0)
+
+    def left_the_layer(config):
+        ops = [op for op in run(without_jitter(config)).recorder.robot_ops if op["robot_id"] == "R1"]
+        return any(a["action"] == b["action"] == "MOVE" and a["target"] == "proc1" and b["target"] == "load"
+                   for a, b in zip(ops, ops[1:]))
+
+    assert not left_the_layer(config)
+    assert left_the_layer(with_policies(config, commit_on_signal=False))

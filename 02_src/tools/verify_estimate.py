@@ -97,6 +97,23 @@ def _accept(interval: float, lead: float, home: float | None = None, **input_kw:
 HOME_BY_STAGE = {"load": 4.0, "proc1": 2.0, "buffer": 3.0, "proc2": 1.5, "unload": 4.5}
 
 
+def _policy(interval: float, **kw: Any) -> Callable[[SimConfig], SimConfig]:
+    def build(c: SimConfig) -> SimConfig:
+        c = _input(interval_s=interval)(c)
+        return dataclasses.replace(c, policies=dataclasses.replace(c.policies, **kw))
+    return build
+
+
+# 実機の制御ロジックが違っても推定できるかを見るための，動作の優先度の組み合わせ
+POLICY_VARIANTS = {
+    "取り出し優先": {"task_order": ("deliver_lower", "deliver_upper", "fetch_lower", "fetch_upper")},
+    "上流優先": {"task_order": ("deliver_upper", "fetch_upper", "deliver_lower", "fetch_lower"),
+                 "commit_delivery": False},
+    "取り出し確定なし": {"commit_on_signal": False},
+    "搬送確定なし": {"commit_delivery": False},
+}
+
+
 def _home_by_stage(interval: float, lead: float) -> Callable[[SimConfig], SimConfig]:
     """原点との移動時間が段ごとに違う構成."""
     def build(c: SimConfig) -> SimConfig:
@@ -314,6 +331,10 @@ def scenarios() -> list[Scenario]:
         Scenario("home", f"原点{home:.0f}s 信号{lead:.0f}s前 間隔{t}", _accept(t, lead, home))
         for home, lead in ((3.0, 0.0), (3.0, 2.0), (3.0, 5.0), (5.0, 2.0), (5.0, 20.0))
         for t in (60.37, 86.37, 137.37, 600.37)
+    ]
+    rows += [
+        Scenario("policy", f"{name} 間隔{t}", _policy(t, **kw))
+        for name, kw in POLICY_VARIANTS.items() for t in (60.37, 86.37, 137.37)
     ]
     rows += [
         Scenario("home", f"原点が段ごとに違う 信号{lead:.0f}s前 間隔{t}", _home_by_stage(t, lead))
@@ -609,6 +630,7 @@ def verify_limits() -> None:
     print("| 構成 | 処理ID | 低負荷からの推定 | 印 | 律速部位 | 真の限界（飽和実行） | 推定÷真値 |")
     print("|---|---|---|---|---|---|---|")
     cases = [("サンプル", s) for s in scenarios() if s.name == "間隔 137.37"]
+    cases += [(s.name, s) for s in scenarios() if s.group == "policy" and s.name.endswith("137.37")]
     cases += [("3台", s) for s in scenarios() if s.name == "3台 100.37"]
     cases += [("処理3s", s) for s in scenarios() if s.name == "処理3s 間隔40.37"]
     cases += [("処理30s", s) for s in scenarios() if s.name == "処理30s 間隔60.37"]
@@ -647,7 +669,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="合成データで推定処理を検証する")
     parser.add_argument("--days", type=float, default=30.0)
     parser.add_argument("--limits", action="store_true", help="飽和実行の真の限界と照合する")
-    parser.add_argument("--only", help="条件のグループ（interval, judge, mode, gap, lag, robot, rows, load, accept, home, nosetting, layout）")
+    parser.add_argument("--only", help="条件のグループ（interval, judge, mode, gap, lag, robot, rows, load, accept, home, nosetting, policy, layout）")
     args = parser.parse_args()
 
     if args.limits:

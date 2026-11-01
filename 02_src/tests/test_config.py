@@ -3,7 +3,7 @@ import dataclasses
 import pytest
 
 from ftto_sim import ConfigError, Simulator, load_config, load_config_str
-from ftto_sim.config import DEFAULT_PROCESS_KEY, _validate
+from ftto_sim.config import DEFAULT_PROCESS_KEY, TASK_ORDER, _validate
 
 from .helpers import SAMPLE, sample_config, with_policies
 
@@ -48,7 +48,7 @@ def test_minimal_config_loads():
     config = load_config_str(MINIMAL)
     assert config.input.cassette_gap_s == 0.0
     assert config.log.logc_kinds == ("hand",)
-    assert config.policies.dispatch == "upstream_first"
+    assert config.policies.dispatch == "priority"
 
 
 def test_bom_is_accepted(tmp_path):
@@ -127,3 +127,27 @@ def test_rejects_home_moves_without_a_default():
 def test_home_time_can_be_set_per_stage():
     robot = dataclasses.replace(load_config(SAMPLE).robots[0], home_move_s=3.0, home_overrides={"proc1": 1.5})
     assert (robot.home_time("proc1"), robot.home_time("load")) == (1.5, 3.0)
+
+
+@pytest.mark.parametrize("order", [
+    TASK_ORDER[:3],  # 足りない
+    (*TASK_ORDER[:3], TASK_ORDER[0]),  # 重複
+    (*TASK_ORDER[:3], "fetch_middle"),  # 未定義
+])
+def test_rejects_invalid_task_order(order):
+    config = load_config(SAMPLE)
+    bad = dataclasses.replace(config, policies=dataclasses.replace(config.policies, task_order=order))
+    with pytest.raises(ConfigError):
+        _validate(bad)
+
+
+def test_rejects_unknown_priority_setting():
+    text = SAMPLE.read_text(encoding="utf-8").replace("commit_delivery = true", "commit_delivary = true")
+    with pytest.raises(ConfigError):
+        load_config_str(text)
+
+
+def test_priority_is_read_from_the_settings():
+    text = SAMPLE.read_text(encoding="utf-8").replace("commit_on_signal = true", "commit_on_signal = false")
+    assert load_config_str(text).policies.commit_on_signal is False
+    assert load_config(SAMPLE).policies.task_order == TASK_ORDER

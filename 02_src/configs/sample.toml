@@ -33,9 +33,21 @@ logc_row_missing_ratio = 0.0  # ログCの行そのものが欠ける割合（�
 shuffle_within_second = false # 同じ秒の中で行の順序を乱す（検証用）
 
 [policies]
-dispatch = "upstream_first"   # ロボット作業の優先順位（仮ルール）．置き先が処理中なら，その前まで移動して待つ
+dispatch = "priority"         # 実行できる作業のうち，優先順位の高いものを選ぶ（[policies.priority] で設定する）
 exchange = "basic"            # 入れ替え動作の手順
 layer_select = "lowest_index" # 並列層の選択
+
+[policies.priority]           # 実機の制御ロジックは情報収集中なので，動作の優先度をここで変えられる
+# 実行できる作業の優先順位（上ほど優先）．作業の種類はこの4つで，すべて1回ずつ指定する
+order = [
+  "deliver_lower",            # Lower の処理済みマテリアルを下流へ置く
+  "deliver_upper",            # Upper の新しいマテリアルを処理層へ置く（入れ替えを含む）
+  "fetch_upper",              # Upper で上流から取る
+  "fetch_lower",              # Lower で処理層から取り出す
+]
+commit_on_signal = true       # 信号を受けて取り出しに向かったら，取り出すまで他の作業をしない
+commit_delivery = true        # Lower が持っている間は，下流へ置くまで他の作業をしない
+advance_to_target = true      # 置き先が空いていなければ，持ったまま置き先の前まで移動して待つ
 
 # --- 装置構成（Unit・Pos は上流から順に記述する．この順がログXの seq になる） ---
 

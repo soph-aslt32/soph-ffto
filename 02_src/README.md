@@ -14,6 +14,8 @@ uv run python -m ftto_sim --config configs/sample.toml --out <出力先ディレ
 - `--duration-s`：シミュレーション期間（秒）を上書きする（例：1か月分は `2592000`）
 - `--seed`：乱数シードを上書きする
 
+実機の制御ロジックは情報収集中なので，ロボットの動作の優先度は設定ファイルの `[policies.priority]` で変えられる（`configs/sample.toml` を参照）．
+
 ## 推定処理（ftto_est）
 
 ログX・A・B・Cだけから，各部位の潜在能力，余裕，カセットごとの律速を求める．方針は `../01_doc/algorithm.md` を参照．

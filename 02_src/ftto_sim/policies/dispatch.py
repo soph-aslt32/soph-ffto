@@ -1,7 +1,11 @@
 """ロボットが次に行う作業を選ぶルール（作業の優先順位）.
 
-正式な優先順位はユーザー側で情報収集中．確定までは上流優先（UpstreamFirst）を仮ルールとする．
-ただし Lower が処理済みマテリアルを持っているときは，下流への搬送を優先する（ユーザー確認済み）．
+実機の制御ロジックはユーザー側で情報収集中なので，優先順位は設定ファイルの [policies.priority] で変えられる．
+既定値はユーザー確認済みの動作である．
+
+- 信号を受けた段階で，処理層から取り出す動作が確定する
+- 処理済みのマテリアルを持つと，下流への搬送が確定する
+- 上流へ次のマテリアルを取りに行くのは，そのあとになる
 """
 
 from __future__ import annotations
@@ -9,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
-from ..config import HANDS, LOWER
+from ..config import HANDS, LOWER, PolicyConfig
 from ..topology import HOME, Position, Robot
 
 if TYPE_CHECKING:
@@ -36,6 +40,9 @@ class DispatchPolicy(Protocol):
     waits_at_target: bool  # 置き先が処理中のとき，置き先の前で待つか
 
     def select(self, robot: Robot, sim: Simulator) -> Task | None:
+        ...
+
+    def preempt(self, robot: Robot, sim: Simulator, hand: str) -> Task | None:
         ...
 
 
@@ -67,35 +74,45 @@ def candidate_tasks(robot: Robot, sim: Simulator) -> list[Task]:
     return tasks
 
 
-class UpstreamFirst:
-    """上流優先（仮ルール）：搬送元の段がより上流の作業を先に行う.
+class PriorityDispatch:
+    """実行できる作業のうち，優先順位の高いものを選ぶ.
 
-    ただし Lower が処理済みマテリアルを持っているときは，下流への搬送を優先する（ユーザー確認済み）．
-    着手できる作業が無ければ，マテリアルを持ったまま置き先の段の前まで移動して待つ（ユーザー確認済み）．
+    実機の制御ロジックは情報収集中なので，優先順位と確定の条件は [policies.priority] で設定する．
+    同じ種類の作業が複数あれば，搬送元の段が上流のものを先に行う．
     """
 
-    waits_at_target = True
+    def __init__(self, policy: PolicyConfig) -> None:
+        self._rank = {name: i for i, name in enumerate(policy.task_order)}
+        self._commit_on_signal = policy.commit_on_signal
+        self._commit_delivery = policy.commit_delivery
+        self.waits_at_target = policy.advance_to_target
+
+    def _key(self, task: Task) -> tuple[int, int]:
+        return (self._rank[f"{task.kind}_{task.hand}"], task.source_index)
 
     def select(self, robot: Robot, sim: Simulator) -> Task | None:
         tasks = candidate_tasks(robot, sim)
-        if not robot.hands[LOWER].is_empty:
+        if self._commit_delivery and not robot.hands[LOWER].is_empty:
             for task in tasks:
                 if task.kind == "deliver" and task.hand == LOWER:
                     return task
             return self._advance(robot, sim, (LOWER,))
         if not tasks:
             return self._advance(robot, sim, HANDS) or self._go_home(robot)
-        return min(tasks, key=lambda t: (t.source_index, HANDS.index(t.hand)))
+        return min(tasks, key=self._key)
 
-    def _go_home(self, robot: Robot) -> Task | None:
-        """どの動作も要求されていなければ，原点で待つ（ユーザー確認済み）."""
-        if not robot.config.has_home or robot.location == HOME:
+    def preempt(self, robot: Robot, sim: Simulator, hand: str) -> Task | None:
+        """何も持たず，hand で取り出す処理の完了を待っている間に，より優先の作業へ移るか."""
+        if self._commit_on_signal or any(not robot.hands[h].is_empty for h in HANDS):
             return None
-        if any(not robot.hands[hand].is_empty for hand in HANDS):
-            return None
-        return Task("home", HANDS[0], None, -1)
+        waiting = self._rank[f"fetch_{hand}"]
+        tasks = [t for t in candidate_tasks(robot, sim) if self._key(t)[0] < waiting]
+        return min(tasks, key=self._key, default=None)
 
     def _advance(self, robot: Robot, sim: Simulator, hands: tuple[str, ...]) -> Task | None:
+        """持ったまま置き先の段の前まで移動する."""
+        if not self.waits_at_target:
+            return None
         for hand in hands:
             held = robot.hands[hand].material
             if held is None:
@@ -105,11 +122,10 @@ class UpstreamFirst:
                 return Task("advance", hand, target.positions[0], held.stage_index)
         return None
 
-
-class UpstreamFirstWaitAtSource(UpstreamFirst):
-    """比較用：置き先が処理中なら，マテリアルを取った場所で待ち，空いてから移動する."""
-
-    waits_at_target = False
-
-    def _advance(self, robot: Robot, sim: Simulator, hands: tuple[str, ...]) -> Task | None:
-        return None
+    def _go_home(self, robot: Robot) -> Task | None:
+        """どの動作も要求されていなければ，原点で待つ（ユーザー確認済み）."""
+        if not robot.config.has_home or robot.location == HOME:
+            return None
+        if any(not robot.hands[hand].is_empty for hand in HANDS):
+            return None
+        return Task("home", HANDS[0], None, -1)
