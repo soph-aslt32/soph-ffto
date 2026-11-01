@@ -75,6 +75,20 @@ def _accept(interval: float, lead: float) -> Callable[[SimConfig], SimConfig]:
     return build
 
 
+def _slow_robot(robot_id: str, interval: float) -> Callable[[SimConfig], SimConfig]:
+    """処理を短くして，ロボット robot_id だけを遅くする（ロボットが律速する2台の構成）."""
+    def build(c: SimConfig) -> SimConfig:
+        c = _input(interval_s=interval, process_id_weights={"A": 1.0})(c)
+        stages = tuple(
+            dataclasses.replace(s, service=dataclasses.replace(s.service, times_s={"A": 5.0}))
+            if s.service.jitter_s > 0 else s
+            for s in c.stages
+        )
+        robots = tuple(dataclasses.replace(r, pick_s=3.0) if r.robot_id == robot_id else r for r in c.robots)
+        return dataclasses.replace(c, stages=stages, robots=robots)
+    return build
+
+
 SHORT_PROCESS = """
 [simulation]
 duration_s = 86400
@@ -258,6 +272,10 @@ def scenarios() -> list[Scenario]:
     rows += [
         Scenario("accept", f"受け入れ信号 {lead:.0f}s前 間隔{t}", _accept(t, lead))
         for lead in (5.0, 15.0, 30.0) for t in (60.37, 70.37, 86.37, 137.37, 200.37)
+    ]
+    rows += [
+        Scenario("layout", f"{robot}が遅い 間隔{t}", _slow_robot(robot, t))
+        for robot in ("R1", "R2") for t in (15.37, 30.37)
     ]
     for interval in (40.37, 100.37):
         rows.append(Scenario("layout", f"3台 {interval}", lambda c: c, _text(THREE_ROBOTS, interval=interval)))

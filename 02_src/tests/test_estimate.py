@@ -513,6 +513,26 @@ def test_robot_with_margin_left_is_not_the_bottleneck(tmp_path_factory):
     assert {j.observed for j in e.judgements[1:-1]} == {None}
 
 
+@pytest.mark.parametrize(("robot", "interval", "expected"), [
+    ("R1", 15.37, "R1"),  # R2 との干渉で入場間隔が W より長くなる
+    ("R2", 15.37, "R2"),
+    ("R1", 30.37, None),
+    ("R2", 30.37, None),
+])
+def test_one_of_two_robots_is_the_bottleneck(tmp_path_factory, robot, interval, expected):
+    config = sample_config(interval_s=interval, process_id_weights={"A": 1.0})
+    stages = tuple(
+        dataclasses.replace(s, service=dataclasses.replace(s.service, times_s={"A": 5.0})) if s.service.jitter_s > 0
+        else s
+        for s in config.stages
+    )
+    robots = tuple(dataclasses.replace(r, pick_s=3.0) if r.robot_id == robot else r for r in config.robots)
+    config = dataclasses.replace(config, stages=stages, robots=robots, duration_s=86400.0)
+    _, e = run_estimate(config, tmp_path_factory)
+    observed = [j.observed for j in e.judgements[3:-1]]
+    assert observed.count(expected) >= 0.95 * len(observed)
+
+
 def with_accept_lead(config, lead):
     stages = tuple(
         dataclasses.replace(s, service=dataclasses.replace(s.service, accept_lead_s=lead)) if s.service.jitter_s > 0

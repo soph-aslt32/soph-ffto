@@ -34,8 +34,9 @@ class CycleWaits:
     material_id: str
     idle_s: float
     process_s: float
-    hold_s: dict[int, float] = field(default_factory=dict)  # 待ち先の段 -> 時間
+    hold_s: dict[int, float] = field(default_factory=dict)  # 待ち先の段 -> 時間（しきい値以上のもの）
     t_entry: int = 0  # ログCの時計での受け取り時刻
+    held_s: float = 0.0  # 持っている間の待ちの合計．しきい値未満も含み，打刻の誤差が打ち消されるよう負の値も足す
 
     @property
     def margin_s(self) -> float:
@@ -90,7 +91,7 @@ def collect_waits(alignment: Alignment, motion: Motion, topology: Topology) -> d
         lag = alignment.lags[robot_id].center_s
         moves = motion.moves[robot_id]
         rows: list[CycleWaits] = []
-        idle = process = 0.0
+        idle = process = held = 0.0
         hold: Counter[int] = Counter()
         holding: dict[str, int] = {}  # ハンド名 -> 持っているマテリアルの行き先の段
         for a, b in zip(actions, actions[1:]):
@@ -101,19 +102,20 @@ def collect_waits(alignment: Alignment, motion: Motion, topology: Topology) -> d
             if not b.resync:
                 wait = b.start - a.end - moves.time(a.stage, b.stage)
                 if holding:
-                    if wait >= threshold:
-                        target = _hold_target(holding, b)
-                        if occupancy.has_free_layer(topology.stages[target], b.start - wait - lag):
-                            process += wait
-                        else:
+                    target = _hold_target(holding, b)
+                    if wait >= threshold and occupancy.has_free_layer(topology.stages[target], b.start - wait - lag):
+                        process += wait
+                    else:
+                        held += wait
+                        if wait >= threshold:
                             hold[target] += wait
                 elif b.kind == PICK and b.stage in process_stages:
                     process += max(wait, 0.0)
                 else:
                     idle += max(wait, 0.0)
             if b.kind == PICK and b.stage == entry_stage:
-                rows.append(CycleWaits(robot_id, b.material_id, idle, process, dict(hold), b.end))
-                idle = process = 0.0
+                rows.append(CycleWaits(robot_id, b.material_id, idle, process, dict(hold), b.end, held))
+                idle = process = held = 0.0
                 hold = Counter()
         result[robot_id] = rows
     return result
